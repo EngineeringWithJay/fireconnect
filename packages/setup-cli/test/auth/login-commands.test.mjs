@@ -8,12 +8,18 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { runCli, seedKeychainConfig, withTempHome } from "../helpers.mjs";
-import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
+import { readGlobalConfig, writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import { pbDecode, pbStringAt } from "../../lib/auth/grpc-web.mjs";
 import { runInteractiveSignIn } from "../../lib/auth/login/flows.mjs";
 import { installShellEnvHook } from "../../lib/io/shell-env-hook.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LEGACY_CODEX_ANTHROPIC_HOOK = [
+  "# >>> fireconnect >>>",
+  'export ANTHROPIC_API_KEY="$(fireconnect key export --stored-only --anthropic 2>/dev/null)"',
+  "# <<< fireconnect <<<",
+  "",
+].join("\n");
 const CLI = path.join(__dirname, "../../bin/fireconnect.mjs");
 
 const VALID_KEY = "fw_login_test_key_000000000000000";
@@ -265,7 +271,7 @@ describe("fireconnect login / logout", () => {
   it("login with FIREWORKS_API_KEY and an Anthropic-only shell hook does not claim FireConnect exports it", async () => {
     await withTempHome("login-env-anthropic-hook-", async (home) => {
       process.env.SHELL = "/bin/zsh";
-      await installShellEnvHook(home, { includeFireworks: false, includeAnthropic: true });
+      await writeFile(path.join(home, ".zshrc"), LEGACY_CODEX_ANTHROPIC_HOOK);
       const result = await runCli(["login"], {
         home,
         env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
@@ -305,6 +311,78 @@ describe("fireconnect login / logout", () => {
         `X-Fireworks-Api-Key: ${VALID_KEY}\nx-routing-preference: 3`,
       );
       assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-ant-keep");
+    });
+  });
+
+  async function seedStaleClaudeSettings(home) {
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.fireworks.ai/inference",
+        ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_stale_key_000000000000000000",
+      },
+    }));
+    await writeGlobalConfig(home, {
+      harnesses: { claude: { enabled: true, provider: "fireworks" } },
+    });
+    return settingsPath;
+  }
+
+  it("login with a rotated FIREWORKS_API_KEY re-points Claude's baked key", async () => {
+    await withTempHome("login-env-rotate-", async (home) => {
+      const settingsPath = await seedStaleClaudeSettings(home);
+
+      const result = await runCli(["login"], {
+        home,
+        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /Already signed in/);
+      assert.match(result.stdout, /Updated Claude Code's Fireworks settings/);
+
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, `X-Fireworks-Api-Key: ${VALID_KEY}`);
+      await assert.rejects(access(path.join(home, ".fireconnect", ".secret-memory")));
+
+      const again = await runCli(["login"], {
+        home,
+        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
+      });
+      assert.doesNotMatch(again.stdout, /Updated Claude Code/);
+    });
+  });
+
+  it("login with a rotated stored key re-points Claude's baked key", async () => {
+    await withTempHome("login-stored-rotate-", async (home) => {
+      await seedKeychainConfig(home, VALID_KEY);
+      const settingsPath = await seedStaleClaudeSettings(home);
+
+      const result = await runCli(["login"], { home, env: gatewayEnv });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /Updated Claude Code's Fireworks settings/);
+
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, `X-Fireworks-Api-Key: ${VALID_KEY}`);
+    });
+  });
+
+  it("login leaves baked keys alone when the active key can't be verified", async () => {
+    await withTempHome("login-unverified-no-sync-", async (home) => {
+      const settingsPath = await seedStaleClaudeSettings(home);
+
+      const result = await runCli(["login"], {
+        home,
+        env: { FIRECONNECT_GATEWAY_URL: "http://127.0.0.1:1", FIREWORKS_API_KEY: VALID_KEY },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /couldn't verify/);
+
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(
+        settings.env.ANTHROPIC_CUSTOM_HEADERS,
+        "X-Fireworks-Api-Key: fw_stale_key_000000000000000000",
+      );
     });
   });
 
@@ -363,6 +441,54 @@ describe("fireconnect login / logout", () => {
 
       const check = await runCli(["status"], { home, env: gatewayEnv });
       assert.equal(check.code, 1);
+    });
+  });
+
+  it("configure --unset openai-api-key clears only the saved OpenAI key and leaves harness files it has no key in alone", async () => {
+    await withTempHome("logout-openai-", async (home) => {
+      await seedKeychainConfig(home, VALID_KEY);
+      await writeGlobalConfig(home, {
+        openaiApiKey: "sk-example-0000",
+        harnesses: { opencode: { enabled: true, provider: "fireworks" }, cursor: { enabled: true, provider: "fireworks" } },
+      });
+
+      const result = await runCli(["configure", "--unset", "openai-api-key"], { home, env: { OPENAI_API_KEY: "" } });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, /Removed the saved OpenAI key/);
+      assert.doesNotMatch(result.stdout, /Removed the saved OpenAI key from|Couldn't update/);
+      assert.equal((await readGlobalConfig(home)).openaiApiKey, "");
+
+      const fireworks = await runCli(["key", "export"], { home });
+      assert.equal(fireworks.code, 0, fireworks.stderr);
+      assert.equal(fireworks.stdout, VALID_KEY);
+    });
+  });
+
+  it("configure --unset openai-api-key still finishes when a harness's settings can't be read, and says how to fix it", async () => {
+    await withTempHome("logout-openai-bad-json-", async (home) => {
+      await writeGlobalConfig(home, {
+        openaiApiKey: "sk-example-0000",
+        harnesses: { opencode: { enabled: true, provider: "fireworks" } },
+      });
+      const configPath = path.join(home, ".config/opencode/opencode.json");
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(configPath, "{ not json");
+
+      const result = await runCli(["configure", "--unset", "openai-api-key"], { home, env: { OPENAI_API_KEY: "" } });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, /Removed the saved OpenAI key\./);
+      assert.match(result.stdout, /Couldn't update OpenCode's settings\. Run fireconnect opencode off/);
+      assert.equal(await readFile(configPath, "utf8"), "{ not json");
+    });
+  });
+
+  it("configure --unset anthropic-api-key leaves an env-reference setting alone", async () => {
+    await withTempHome("logout-anthropic-ref-", async (home) => {
+      await writeGlobalConfig(home, { anthropicApiKey: "{env:ANTHROPIC_API_KEY}" });
+      const result = await runCli(["configure", "--unset", "anthropic-api-key"], { home, env: { ANTHROPIC_API_KEY: "" } });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, /No saved Anthropic key to remove/);
+      assert.equal((await readGlobalConfig(home)).anthropicApiKey, "{env:ANTHROPIC_API_KEY}");
     });
   });
 

@@ -6,14 +6,98 @@ import {
   assertAzureApiKey,
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
-import { readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
-import { isAnthropicShapedKey, isOpenAIShapedKey } from "../../firerouter/core.mjs";
-import { accent } from "../../ui.mjs";
+import {
+  ANTHROPIC_API_KEY_ENV_REF,
+  isEnabledFireworksHarness,
+  OPENAI_API_KEY_ENV_REF,
+  readGlobalConfig,
+  writeGlobalConfig,
+} from "../../config/global-config.mjs";
+import {
+  ANTHROPIC_BYOK_HEADER,
+  isAnthropicShapedKey,
+  isOpenAIShapedKey,
+  OPENAI_BYOK_HEADER,
+} from "../../firerouter/core.mjs";
+import { HARNESS } from "../../harness/id.mjs";
+import { userSettingsPath } from "../../harnesses/claude/core.mjs";
+import { readJsonIfExists } from "../../io/json.mjs";
+import { removeSavedProviderKeysFromHarnesses } from "../../keys/sync.mjs";
+import { accent, check } from "../../ui/term.mjs";
 import { printNote, printSuccess } from "../messages.mjs";
+
+const PROVIDER_KEYS = Object.freeze({
+  anthropic: {
+    label: "Anthropic",
+    flag: "--anthropic-api-key",
+    configField: "anthropicApiKey",
+    envRef: ANTHROPIC_API_KEY_ENV_REF,
+    envVar: "ANTHROPIC_API_KEY",
+    header: ANTHROPIC_BYOK_HEADER,
+  },
+  openai: {
+    label: "OpenAI",
+    flag: "--openai-api-key",
+    configField: "openaiApiKey",
+    envRef: OPENAI_API_KEY_ENV_REF,
+    envVar: "OPENAI_API_KEY",
+    header: OPENAI_BYOK_HEADER,
+  },
+});
+
+function listLabels(labels) {
+  return labels.length > 1 ? `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}` : labels[0];
+}
+
+async function claudeSignsInWithAnthropicKey(home, harnesses) {
+  if (!isEnabledFireworksHarness(harnesses, HARNESS.CLAUDE)) {
+    return false;
+  }
+  const settings = await readJsonIfExists(userSettingsPath(home)).catch(() => ({}));
+  return isAnthropicShapedKey(settings?.env?.ANTHROPIC_API_KEY ?? "");
+}
+
+/**
+ * Clear saved provider keys from the global config and from every harness
+ * that holds a copy.
+ *
+ * @param {string} home
+ * @param {Array<keyof typeof PROVIDER_KEYS>} providers
+ */
+async function unsetProviderKeys(home, providers) {
+  const config = await readGlobalConfig(home);
+  for (const provider of providers) {
+    const { label, configField, envRef, envVar } = PROVIDER_KEYS[provider];
+    const stored = config[configField]?.trim() ?? "";
+    if (stored && stored !== envRef) {
+      await writeGlobalConfig(home, { [configField]: "" });
+      console.log(`${check()} Removed the saved ${label} key.`);
+    } else {
+      console.log(`No saved ${label} key to remove.`);
+    }
+    if (process.env[envVar]?.trim()) {
+      console.log(`Note: ${envVar} is still set in your environment; harnesses keep sending it until you unset it.`);
+    }
+  }
+
+  const headerNames = providers.map((provider) => PROVIDER_KEYS[provider].header);
+  const { updated, failed } = await removeSavedProviderKeysFromHarnesses(home, headerNames);
+  if (updated.length) {
+    const keys = providers.length === 1 ? `the saved ${PROVIDER_KEYS[providers[0]].label} key` : "saved keys";
+    const names = listLabels(updated);
+    console.log(`Removed ${keys} from ${names}. Restart ${updated.length === 1 ? names : "them"} to pick that up.`);
+  }
+  for (const { id, label } of failed) {
+    console.log(`Couldn't update ${label}'s settings. Run ${accent(`fireconnect ${id} off`)}, then turn it on again.`);
+  }
+  if (providers.includes("anthropic") && await claudeSignsInWithAnthropicKey(home, config.harnesses)) {
+    console.log("Claude Code still signs in with the Anthropic key in its own settings; FireConnect leaves that alone.");
+  }
+}
 /**
  * `fireconnect configure` sets the non-Fireworks-key globals: the provider
  * (Fireworks vs a Microsoft Azure AI Foundry endpoint) and the provider BYOK
- * keys for FireRouter mode (Anthropic, OpenAI).
+ * keys for FireRouter mode (Anthropic, OpenAI), which `--unset` clears.
  *
  * It does NOT set the Fireworks API key (use `fireconnect login`) and does NOT
  * register harnesses (enable one with `fireconnect <harness>`). In this
@@ -45,12 +129,23 @@ export async function runConfigureCommand(ctx) {
   const anthropicKeyProvided = ctx.anthropicKeyFromFlag && Boolean(ctx.anthropicKey?.trim());
   const openaiKeyProvided = ctx.openaiKeyFromFlag && Boolean(ctx.openaiKey?.trim());
 
-  if (!provider && !anthropicKeyProvided && !openaiKeyProvided) {
+  const unsetProviders = [ctx.unsetAnthropicKey && "anthropic", ctx.unsetOpenaiKey && "openai"].filter(Boolean);
+  if (unsetProviders.length) {
+    const setAlongside = unsetProviders.find((name) =>
+      name === "anthropic" ? ctx.anthropicKeyFromFlag : ctx.openaiKeyFromFlag);
+    if (setAlongside) {
+      const { flag } = PROVIDER_KEYS[setAlongside];
+      throw new Error(`${flag} and --unset ${flag.slice(2)} cannot be used together.`);
+    }
+  }
+
+  if (!provider && !anthropicKeyProvided && !openaiKeyProvided && !unsetProviders.length) {
     printNote("Nothing to configure.");
     console.log(`  Sign in / set your key:  ${accent("fireconnect login")}`);
     console.log(`  Choose a provider:       ${accent("fireconnect configure --provider azure --base-url <url> --api-key <azure-key>")}`);
     console.log(`  Set the Anthropic key:   ${accent("fireconnect configure --anthropic-api-key sk-ant-…")}`);
     console.log(`  Set the OpenAI key:      ${accent("fireconnect configure --openai-api-key sk-…")}`);
+    console.log(`  Clear a saved key:       ${accent("fireconnect configure --unset openai-api-key")}`);
     console.log(`  Enable a harness:        ${accent("fireconnect <harness>")}`);
     return;
   }
@@ -92,6 +187,13 @@ export async function runConfigureCommand(ctx) {
     update.azure = { baseUrl, apiKey: azureApiKey };
   } else if (provider === "fireworks") {
     update.provider = "fireworks";
+  }
+
+  if (unsetProviders.length) {
+    await unsetProviderKeys(home, unsetProviders);
+  }
+  if (!Object.keys(update).length) {
+    return;
   }
 
   await writeGlobalConfig(home, update);

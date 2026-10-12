@@ -1,5 +1,8 @@
 import {
+  FIREROUTER_MODEL_ID,
+  isFirerouterModel,
   isFirerouterModelPattern,
+  shortFireworksModelRef,
 } from "../fireworks/model-id.mjs";
 import { stdin as input } from "node:process";
 import {
@@ -17,6 +20,22 @@ import {
 export const FIREROUTER_FIREWORKS_HEADER = "X-Fireworks-Api-Key";
 export const FIREROUTER_TAGLINE =
   "Routes each user turn between Claude and open models.";
+// The route behind Codex's FireRouter row.
+export const FIREROUTER_ASTRA_ROUTE = `${FIREROUTER_MODEL_ID}/astra`;
+export const FIREROUTER_ASTRA_TAGLINE =
+  "Routes each user turn between GPT Astra, GPT Sol, and open models.";
+// Other routes serve what they name (a family plus open models, or only the
+// listed models), so their tagline names no provider.
+export const FIREROUTER_ROUTE_TAGLINE =
+  "Routes each user turn across the models in this route.";
+
+/** @param {string} modelId */
+export function firerouterTagline(modelId = "") {
+  if (shortFireworksModelRef(modelId) === FIREROUTER_ASTRA_ROUTE) {
+    return FIREROUTER_ASTRA_TAGLINE;
+  }
+  return !modelId || isFirerouterModel(modelId) ? FIREROUTER_TAGLINE : FIREROUTER_ROUTE_TAGLINE;
+}
 // Outbound routing preference FireRouter reads to trade capability vs cost
 // (1 = max intelligence … 5 = max savings). Set via `--routing-preference`;
 // omitted entirely when unset so FireRouter applies its own default. Re-running
@@ -242,6 +261,37 @@ export function anthropicKeyFromCustomHeaders(value) {
 }
 
 /**
+ * `headers` without the named entries (case-insensitive); {} when `headers`
+ * is not an object.
+ * @param {unknown} headers
+ * @param {string[]} headerNames
+ * @returns {Record<string, unknown>}
+ */
+export function withoutHeaders(headers, headerNames) {
+  if (!headers || typeof headers !== "object") {
+    return {};
+  }
+  const names = new Set(headerNames.map((name) => name.toLowerCase()));
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())),
+  );
+}
+
+/**
+ * Like {@link withoutHeaders}, but null when none of the named entries is
+ * present, so callers can skip a write.
+ * @param {unknown} headers
+ * @param {string[]} headerNames
+ * @returns {Record<string, unknown> | null}
+ */
+export function omitHeaders(headers, headerNames) {
+  const kept = withoutHeaders(headers, headerNames);
+  return headers && typeof headers === "object" && Object.keys(kept).length < Object.keys(headers).length
+    ? kept
+    : null;
+}
+
+/**
  * Build a `settingsEnv`-shaped object (with an ANTHROPIC_CUSTOM_HEADERS string)
  * from a harness's stored provider headers, so a repeat `on` can recover the
  * Anthropic BYOK key that lives only in those headers via
@@ -290,10 +340,21 @@ export function setFireworksKeyInCustomHeaders(value, fireworksKey) {
  * @returns {string}
  */
 export function stripFireworksKeyFromCustomHeaders(value) {
+  return stripCustomHeaderLines(value, [FIREROUTER_FIREWORKS_HEADER]);
+}
+
+/**
+ * Remove the named header line(s) from an ANTHROPIC_CUSTOM_HEADERS value,
+ * preserving all other lines. Returns "" when nothing remains.
+ * @param {unknown} value
+ * @param {string[]} headerNames
+ * @returns {string}
+ */
+export function stripCustomHeaderLines(value, headerNames) {
   if (typeof value !== "string") {
     return "";
   }
-  const names = [FIREROUTER_FIREWORKS_HEADER.toLowerCase()];
+  const names = headerNames.map((name) => name.toLowerCase());
   return value
     .split("\n")
     .filter((line) => {

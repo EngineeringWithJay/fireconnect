@@ -5,7 +5,14 @@ import {
   migrateClaudeRetiredAutoModeServerPinOnUpgrade,
   migrateClaudeToolSearchOnUpgrade,
 } from "../harnesses/claude/upgrade-migrations.mjs";
-import { migrateCodexWebSearchOnUpgrade } from "../harnesses/codex/upgrade-migrations.mjs";
+import {
+  migrateCodexCatalogConstantsOnUpgrade,
+  migrateCodexWebSearchOnUpgrade,
+} from "../harnesses/codex/upgrade-migrations.mjs";
+import {
+  migrateOpencodePickerDuplicatesOnUpgrade,
+  migrateOpencodeV2ProvidersOnUpgrade,
+} from "../harnesses/opencode/upgrade-migrations.mjs";
 import { migrateVscodeResponsesApiType } from "../harnesses/vscode/upgrade-migrations.mjs";
 import { HARNESS } from "../harness/id.mjs";
 import { ensureAutoCatalogEntry } from "../harness/auto-catalog.mjs";
@@ -102,6 +109,21 @@ const HARNESS_FORWARD_MIGRATIONS = [
     run: migrateCodexWebSearchOnUpgrade,
     success: "Enabled Codex web search — restart Codex to pick it up.",
     failure: "Couldn't enable Codex web search — re-run fireconnect codex on.",
+  },
+  {
+    run: migrateCodexCatalogConstantsOnUpgrade,
+    success: "Updated Codex's Fireworks model catalog so MCP tools reach the model — restart Codex to pick it up.",
+    failure: "Couldn't update Codex's Fireworks model catalog for MCP tools — re-run fireconnect codex on.",
+  },
+  {
+    run: migrateOpencodeV2ProvidersOnUpgrade,
+    success: "Added FireConnect's provider to OpenCode v2's providers map so its models show up. Restart OpenCode to pick it up.",
+    failure: "Couldn't update OpenCode's v2 providers map. Re-run fireconnect opencode on.",
+  },
+  {
+    run: migrateOpencodePickerDuplicatesOnUpgrade,
+    success: "Removed duplicate Fireworks models from OpenCode's /models picker. Restart OpenCode to pick it up.",
+    failure: "Couldn't remove duplicate Fireworks models from OpenCode's picker. Re-run fireconnect opencode on.",
   },
   {
     run: migrateClaudeModelPickerOnUpgrade,

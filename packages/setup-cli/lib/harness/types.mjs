@@ -19,6 +19,8 @@ import { HARNESSES } from "./id.mjs";
  * @property {boolean} anthropicKeyFromFlag
  * @property {string} openaiKey
  * @property {boolean} openaiKeyFromFlag
+ * @property {boolean} [unsetAnthropicKey]  // configure: clear the saved Anthropic key everywhere
+ * @property {boolean} [unsetOpenaiKey]     // configure: clear the saved OpenAI key everywhere
  * @property {boolean} [openai]   // key export: print the OpenAI BYOK key instead of the Fireworks key
  * @property {string} main
  * @property {string} opus
@@ -36,9 +38,10 @@ import { HARNESSES } from "./id.mjs";
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path
  * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
- * @property {boolean} [quiet]   // uninstall: suppress per-harness off narration
+ * @property {boolean} [quiet]   // uninstall/upgrade: suppress per-harness on/off narration
  * @property {boolean} [storedOnly] // key export: prefer secret store; env only when nothing stored
  * @property {string} [vscodePath]      // vscode: explicit chatLanguageModels.json path
+ * @property {boolean} [modelImplied] // `main` came from resolveOnContext (default or current model), not --model
  */
 
 /**
@@ -56,8 +59,8 @@ import { HARNESSES } from "./id.mjs";
  * @property {(ctx: HarnessContext) => Promise<void>} [live]
  * @property {(ctx: HarnessContext) => Promise<string>} resolveKey
  * @property {(ctx: HarnessContext) => Promise<HarnessContext>} [resolveOnContext]
- *   Resolve state-dependent defaults needed before validating `on` options.
- * @property {{ byok?: "none"|"value"|"envref", autoCatalog?: boolean, catalogByok?: boolean }|null} [firerouter]
+ *   Resolve state-dependent defaults for `on`; the result is validated and dispatched.
+ * @property {{ byok?: "none"|"value", autoCatalog?: boolean, catalogByok?: boolean }|null} [firerouter]
  */
 
 const REQUIRED_METHODS = [

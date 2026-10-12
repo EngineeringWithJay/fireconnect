@@ -135,6 +135,22 @@ describe("codex-toml-patch", () => {
     assert.equal(codexCurrentModelId(doc), "glm-fast-latest");
   });
 
+  // A gateway `on` with a lost backup must not snapshot this as the user's
+  // original config, or `off` would restore a config Codex 0.160+ cannot load.
+  it("treats a legacy fireworks-azure routing as managed", () => {
+    const doc = parseToml([
+      'model_provider = "fireworks-azure"',
+      'model = "test-deployment"',
+      "",
+      "[model_providers.fireworks-azure]",
+      'base_url = "https://example-resource.services.ai.azure.com/openai/v1"',
+      'wire_api = "chat"',
+      "",
+    ].join("\n"));
+    assert.equal(fireconnectManaged(doc), true);
+    assert.equal(codexCurrentModelId(doc), "test-deployment");
+  });
+
   it("keeps routing keys at document root when user config ends in [tui] tables", () => {
     const input = [
       "[tui]",
@@ -210,11 +226,11 @@ describe("codex-toml-patch", () => {
       },
     });
     const table = parseToml(patched).tables["model_providers.fireworks-ai"];
-    assert.deepEqual(table.http_headers, {
+    assert.deepEqual({ ...table.http_headers }, {
       "User-Agent": "custom-client/1.0",
       "X-User-Trace": "keep",
     });
-    assert.deepEqual(table.env_http_headers, {
+    assert.deepEqual({ ...table.env_http_headers }, {
       "x-anthropic-api-key": "ANTHROPIC_API_KEY",
       "X-User-Env": "USER_ENV",
     });

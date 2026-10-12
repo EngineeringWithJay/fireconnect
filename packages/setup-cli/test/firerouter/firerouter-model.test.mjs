@@ -30,7 +30,6 @@ import { globalListIncludesFirerouter } from "../../lib/fireworks/model-list.mjs
 import {
   FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE,
   assertFirerouterKeyType,
-  firerouterByokEnvRefHeaders,
   firerouterCredentialsApplyOnGateway,
   firerouterCredentialsRequiredMessage,
   resolveExplicitFirerouterCredential,
@@ -317,28 +316,12 @@ describe("firerouter routing plan", () => {
       }),
       {},
     );
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(purePlan, { catalogFirerouter: true }),
-      {},
-    );
-    // Control: an Anthropic-requiring selection maps the env ref when a key
-    // is behind it; without one, the ref stays absent (never dangling).
-    const anthropicPlan = resolveFirerouterPlan({ main: "firerouter" });
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(anthropicPlan, { anthropicKey: "sk-ant-123" }),
-      { "x-anthropic-api-key": "ANTHROPIC_API_KEY" },
-    );
-    assert.deepEqual(firerouterByokEnvRefHeaders(anthropicPlan, {}), {});
   });
 
   it("firerouterCredentialsRequiredMessage matches harness BYOK mode", () => {
     assert.match(
       firerouterCredentialsRequiredMessage({ byok: "value" }),
       /Anthropic API key/,
-    );
-    assert.match(
-      firerouterCredentialsRequiredMessage({ byok: "envref" }),
-      /ANTHROPIC_API_KEY/,
     );
     assert.match(
       firerouterCredentialsRequiredMessage({ byok: "none" }),

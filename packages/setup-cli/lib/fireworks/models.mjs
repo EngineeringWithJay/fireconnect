@@ -190,6 +190,15 @@ export function firerouterDisplayName(modelId) {
   return ["FireRouter", ...segments.map(prettyModelName)].join(" · ");
 }
 
+/** The gateway answered with a non-2xx status (as opposed to a failed request). */
+class FireworksHttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = "FireworksHttpError";
+    this.status = status;
+  }
+}
+
 async function fetchGatewayPage(path, apiKey) {
   // Same dev/test override as verify-api-key.mjs — lets the mock gateway
   // serve the catalog in specs.
@@ -218,15 +227,21 @@ async function fetchGatewayPage(path, apiKey) {
     if (response.ok) {
       return response.json();
     }
-    const body = await response.text().catch(() => "");
+    const body = (await response.text().catch(() => "")).trim();
     const detail = body ? `: ${body.slice(0, 200)}` : "";
     if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `Fireworks API rejected the API key (${response.status}). `
+      // A 403 can come from a network policy rather than a bad key.
+      const rejected = response.status === 401 ? "the API key" : "the request";
+      throw new FireworksHttpError(
+        response.status,
+        `Fireworks API rejected ${rejected} (${response.status}${detail}). `
         + "Check FIREWORKS_API_KEY and ensure the key can access account model listings.",
       );
     }
-    lastError = new Error(`Fireworks API ${response.status} ${response.statusText}${detail}`);
+    lastError = new FireworksHttpError(
+      response.status,
+      `Fireworks API ${response.status} ${response.statusText}${detail}.`,
+    );
     // Only retry server-side blips; client errors are final.
     if (response.status < 500 || response.status > 599) {
       throw lastError;
@@ -1060,11 +1075,16 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
         updatedAt: cache.cachedAt || null,
       };
     }
+    const reason = error instanceof FireworksHttpError
+      ? error.message
+      : `Couldn't reach Fireworks (${error?.message || "network error"}). Check your network connection.`;
+    const retry = error instanceof FireworksHttpError && error.status >= 500
+      ? "Retry once the Fireworks API recovers. "
+      : "";
     throw new Error(
-      "Couldn't fetch the Fireworks model catalog and no cached copy exists yet. "
-      + "Reconnect to the network and run any FireConnect command that loads the "
-      + "catalog (e.g. `fireconnect <harness>` or `fireconnect model list`) — the "
-      + "data is cached with a TTL, so eligible commands won't refetch while it's fresh.",
+      `Couldn't fetch the Fireworks model catalog and no cached copy exists yet. ${reason} ${retry}`
+      + "Once `fireconnect model list` succeeds, the catalog is cached for offline use.",
+      { cause: error },
     );
   }
 }

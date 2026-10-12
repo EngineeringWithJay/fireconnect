@@ -3,6 +3,7 @@ import { dispatchHarnessCommand } from "../../harness/types.mjs";
 import { getHarness } from "../../harness/registry.mjs";
 import { persistGlobalAnthropicApiKey, persistGlobalOpenaiApiKey } from "../../config/global-config.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
+import { PROVIDER_KEYS_DOCS_URL } from "../messages.mjs";
 import { isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
 import { isAnthropicShapedKey, isOpenAIShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsOpenaiApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
@@ -17,6 +18,23 @@ import {
 import { shouldSkipEnvKeyAutoPersist } from "../../config/secret-storage-policy.mjs";
 
 const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE, HARNESS.CODEX, HARNESS.COPILOT_APP]);
+
+// Provider-key flags a harness refuses, with what to do instead: its own sign-in
+// pays for that provider's models, or the key belongs on the Fireworks account.
+const REFUSED_KEY_FLAGS = Object.freeze({
+  [HARNESS.CLAUDE]: {
+    anthropic: "Claude Code pays for Claude turns with its own sign-in. Run `claude login`, or export "
+      + "ANTHROPIC_API_KEY to pay with an Anthropic key. For Claude on other harnesses, run "
+      + `\`fireconnect configure --anthropic-api-key <key>\` or add a Provider Key: ${PROVIDER_KEYS_DOCS_URL}.`,
+  },
+  [HARNESS.CODEX]: {
+    anthropic: "Codex doesn't send an Anthropic key. For Claude in a FireRouter route, add an Anthropic "
+      + `Provider Key on your Fireworks account: ${PROVIDER_KEYS_DOCS_URL}. To save the key for other `
+      + "harnesses, run `fireconnect configure --anthropic-api-key <key>`.",
+    openai: "Codex pays for GPT turns with its own sign-in. To pay with an OpenAI key, sign Codex in "
+      + "with it: `codex login --with-api-key`.",
+  },
+});
 
 /**
  * Fail on parsed flags the selected harness/command cannot use. The parser is
@@ -111,6 +129,9 @@ function validateHarnessOptions(route, ctx) {
   if (ctx.providersPath && harnessId !== HARNESS.COPILOT_CLI) {
     throw new Error("--providers-path is supported only by the Copilot CLI.");
   }
+  if (ctx.unsetAnthropicKey || ctx.unsetOpenaiKey) {
+    throw new Error("To clear a saved provider key, run `fireconnect configure --unset openai-api-key` (or `--unset anthropic-api-key`).");
+  }
   if (ctx.anthropic || ctx.openai || ctx.storedOnly || ctx.withToken || ctx.revoke || ctx.paste || ctx.account) {
     throw new Error("This option belongs to a global login/logout/key command, not a harness command.");
   }
@@ -127,14 +148,16 @@ function validateHarnessOptions(route, ctx) {
       throw new Error("--routing-preference is not supported by this harness.");
     }
   }
+  const refusedKeyFlags = REFUSED_KEY_FLAGS[harnessId];
+  if (ctx.anthropicKeyFromFlag && refusedKeyFlags?.anthropic) {
+    throw new Error(refusedKeyFlags.anthropic);
+  }
+  if (ctx.openaiKeyFromFlag && refusedKeyFlags?.openai) {
+    throw new Error(refusedKeyFlags.openai);
+  }
   if (ctx.anthropicKeyFromFlag) {
-    const validClaudeOn = harnessId === HARNESS.CLAUDE && isOn;
-    if (!validClaudeOn && (!isOn || !firerouterRequested)) {
-      throw new Error(
-        harnessId === HARNESS.CLAUDE
-          ? "--anthropic-api-key applies only to `fireconnect claude on`."
-          : "--anthropic-api-key requires `<harness> on --model firerouter`.",
-      );
+    if (!isOn || !firerouterRequested) {
+      throw new Error("--anthropic-api-key requires `<harness> on --model firerouter`.");
     }
     if (!supportsAnthropicApiKeyFlag(getHarness(harnessId).firerouter)) {
       throw new Error("--anthropic-api-key is not supported by this harness.");
@@ -205,11 +228,11 @@ export async function finalizeClaudeOnOutcome(
  */
 export async function runHarnessCommand(route, ctx) {
   const adapter = getHarness(route.harnessId);
-  const validationCtx = route.verb === "on" && !route.noun && adapter.resolveOnContext
+  const onCtx = route.verb === "on" && !route.noun && adapter.resolveOnContext
     ? await adapter.resolveOnContext(ctx)
     : ctx;
   try {
-    validateHarnessOptions(route, validationCtx);
+    validateHarnessOptions(route, onCtx);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -254,7 +277,7 @@ export async function runHarnessCommand(route, ctx) {
     }
   }
 
-  const outcome = await dispatchHarnessCommand(adapter, route, ctx);
+  const outcome = await dispatchHarnessCommand(adapter, route, onCtx);
   if (
     route.verb === "on"
     && route.harnessId === HARNESS.CLAUDE

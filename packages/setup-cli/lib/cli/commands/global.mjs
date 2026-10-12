@@ -149,7 +149,6 @@ function claudeHelp() {
       ["--subagent <id>", "Pin the subagent model (`native` = Claude default)."],
       ["--non-interactive", "Non-interactive connect (default)."],
       ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); bare on, --model firerouter, or a firerouter tier pin.`],
-      ["--anthropic-api-key <key>", "Optional: store sk-ant-… for Claude Code native auth (not required for FireRouter)."],
       ["--openai-api-key <key>", "Optional: store sk-… so FireRouter can route hard turns to OpenAI models."],
     ]),
     "",
@@ -179,7 +178,7 @@ function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNo
   const onOpts = standardOnOpts({
     azure: Boolean(getHarness(id).azure),
     firerouter: getHarness(id).firerouter,
-    modelNote: id === "deepseek" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
+    modelNote: id === "deepseek" ? "use firerouter for FireRouter" : id === "codex" ? "default: firerouter; a re-on keeps the current model" : "",
   });
   if (force) {
     onOpts.push(["--force", "Write while the ChatGPT app is running (not recommended)."]);
@@ -292,8 +291,8 @@ export function printHelp(topic = "") {
   const codexHelpOpts = {
     configPath: "--config-path <path>",
     configPathNote: "Explicit ~/.codex/config.toml path.",
-    codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY and OPENAI_API_KEY from your shell. "
-      + "Pass --anthropic-api-key / --openai-api-key with codex on (or configure), then source your shell config.",
+    codexNote: "GPT turns are paid by Codex's own sign-in (your ChatGPT plan, or an OpenAI key from "
+      + "`codex login --with-api-key`), else by an OpenAI Provider Key on your Fireworks account.",
     force: true,
   };
   const harnessHelp = {
@@ -416,6 +415,7 @@ export function printHelp(topic = "") {
         ["--api-key <key>", "Foundry endpoint key (azure only)."],
         ["--anthropic-api-key <key>", "Anthropic key for firerouter."],
         ["--openai-api-key <key>", "OpenAI key for firerouter."],
+        ["--unset <key>", "Clear a saved key (anthropic-api-key or openai-api-key), here and in every harness."],
         OPT_HOME,
       ]),
     ),

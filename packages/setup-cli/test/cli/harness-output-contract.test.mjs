@@ -77,6 +77,24 @@ describe("compact harness command output", () => {
     assert.equal(lines[9], "Restart OpenCode to use the new setup.");
   });
 
+  it("tells Codex off users how to reopen ChatGPT app threads started on Fireworks", () => {
+    const lines = [];
+    const original = console.log;
+    console.log = (line = "") => lines.push(String(line));
+    try {
+      printCodexRestartHint({ resume: false });
+    } finally {
+      console.log = original;
+    }
+    assert.match(lines[0], /Quit & reopen the ChatGPT app/);
+    assert.equal(lines[1], "Start Codex again to use the new setup.");
+    assert.equal(
+      lines[2],
+      "ChatGPT app threads started on Fireworks won't open until you run `fireconnect codex on` again.",
+    );
+    assert.doesNotMatch(lines.join("\n"), /codex resume/);
+  });
+
   it("prints outcome, FireRouter help, and one apply action for routine on", async () => {
     await withTempHome("compact-on-", async (home) => {
       const result = await runCli(
@@ -260,9 +278,21 @@ describe("compact harness command output", () => {
         },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /Codex → Fireworks · firerouter/);
-      assert.match(result.stdout, /FireRouter is on\. Routes each user turn between Claude and open models/);
+      assert.match(result.stdout, /Codex → Fireworks · firerouter\n/);
+      assert.match(result.stdout, /FireRouter is on\. Routes each user turn between GPT Astra, GPT Sol, and open models/);
       assert.doesNotMatch(result.stdout, /Routing:/);
+    });
+  });
+
+  it("names no provider for a FireRouter route other than bare firerouter or Astra", async () => {
+    await withTempHome("compact-codex-firerouter-sol-", async (home) => {
+      const result = await runCli(
+        ["codex", "on", "--model", "firerouter/sol", "--api-key", "fw_compact_output_key"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /FireRouter is on\. Routes each user turn across the models in this route\./);
+      assert.doesNotMatch(result.stdout, /Claude/);
     });
   });
 

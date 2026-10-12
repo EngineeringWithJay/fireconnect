@@ -76,7 +76,7 @@ describe("<harness> on --api-key validation", () => {
       const config = JSON.parse(await readFile(path.join(home, ".fireconnect", "config.json"), "utf8"));
       assert.equal(config.apiKey, "{keychain:fireworks-api-key}");
       const codexConfig = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
-      assert.match(codexConfig, new RegExp(`experimental_bearer_token = "${VALID_KEY}"`));
+      assert.match(codexConfig, new RegExp(`"x-fireworks-api-key" = "${VALID_KEY}"`));
       for (const shellConfig of [".bashrc", ".bash_profile", ".zshrc"]) {
         const filePath = path.join(home, shellConfig);
         if (await fileExists(filePath)) {

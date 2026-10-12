@@ -10,6 +10,7 @@ import {
   normalizeModelId,
 } from "../../fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
+import { omitHeaders } from "../../firerouter/core.mjs";
 import {
   detectApiKeyType,
   isFireworksShapedKey,
@@ -307,6 +308,31 @@ export function piProviderStatus(settings) {
  */
 export function piStoredByokHeaders(modelsConfig) {
   return modelsConfig?.providers?.[PI_PROVIDER]?.headers ?? {};
+}
+
+/**
+ * Drop saved provider keys from the Fireworks provider's `headers` in Pi's
+ * `models.json`, after `fireconnect configure --unset anthropic-api-key` / `--unset openai-api-key`.
+ * @param {{ modelsPath: string, headerNames: string[] }} opts
+ * @returns {Promise<boolean>} whether models.json changed
+ */
+export async function removePiSavedProviderKeys({ modelsPath, headerNames }) {
+  const modelsConfig = await readJsonIfExists(modelsPath);
+  const provider = modelsConfig?.providers?.[PI_PROVIDER];
+  const headers = omitHeaders(provider?.headers, headerNames);
+  if (!headers) {
+    return false;
+  }
+  const { headers: _dropped, ...rest } = provider;
+  const next = {
+    ...modelsConfig,
+    providers: {
+      ...modelsConfig.providers,
+      [PI_PROVIDER]: Object.keys(headers).length ? { ...rest, headers } : rest,
+    },
+  };
+  await writeJson(modelsPath, next, { mode: 0o600 });
+  return true;
 }
 
 /**

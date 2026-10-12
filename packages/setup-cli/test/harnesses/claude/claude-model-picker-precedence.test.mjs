@@ -49,7 +49,7 @@ describe("Claude main model storage", () => {
       };
 
       await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY, "--anthropic-api-key", "sk-ant-test"],
+        ["claude", "on", "--api-key", FIREWORKS_KEY],
         env,
       );
 
@@ -75,7 +75,7 @@ describe("Claude main model storage", () => {
       };
 
       const enabled = await runFireconnect(
-        ["claude", "on", "--model", "kimi-fast-latest", "--api-key", FIREWORKS_KEY, "--anthropic-api-key", "sk-ant-test"],
+        ["claude", "on", "--model", "kimi-fast-latest", "--api-key", FIREWORKS_KEY],
         env,
       );
       assert.equal(enabled.code, 0, enabled.stderr);
@@ -109,7 +109,7 @@ describe("Claude main model storage", () => {
       };
 
       const enabled = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY, "--anthropic-api-key", "sk-ant-test"],
+        ["claude", "on", "--api-key", FIREWORKS_KEY],
         env,
       );
       assert.equal(enabled.code, 0, enabled.stderr);
@@ -252,7 +252,7 @@ describe("Claude main model storage", () => {
       };
 
       const enabled = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY, "--anthropic-api-key", "sk-ant-test"],
+        ["claude", "on", "--api-key", FIREWORKS_KEY],
         env,
       );
       assert.equal(enabled.code, 0, enabled.stderr);

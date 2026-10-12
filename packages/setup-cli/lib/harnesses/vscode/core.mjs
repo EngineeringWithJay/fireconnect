@@ -34,6 +34,7 @@ import {
 import {
   ANTHROPIC_BYOK_BODY_FIELD,
   ANTHROPIC_BYOK_HEADER,
+  omitHeaders,
 } from "../../firerouter/core.mjs";
 import { assertIdeStopped, ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-running.mjs";
 import {
@@ -45,7 +46,9 @@ import {
   encryptSecret,
   isSecretEncryptionAvailable,
   linuxEncryptUsesBasicTextBackend,
+  linuxSecretUsesKeyringBackend,
   secretEncryptionUnavailableMessage,
+  storedSecretHasCiphertext,
 } from "./safestorage.mjs";
 import {
   applyItemTableWrites,
@@ -321,6 +324,46 @@ export function vscodeStoredByokHeaders(arr) {
     headers[ANTHROPIC_BYOK_HEADER] = fromBody;
   }
   return headers;
+}
+
+/**
+ * Drop saved provider keys from the FireConnect provider's models in
+ * `chatLanguageModels.json` (`requestHeaders`, plus the Anthropic body field),
+ * after `fireconnect configure --unset anthropic-api-key` / `--unset openai-api-key`.
+ * @param {{ filePath: string, headerNames: string[] }} opts
+ * @returns {Promise<boolean>} whether the file changed
+ */
+export async function removeVscodeSavedProviderKeys({ filePath, headerNames }) {
+  const arr = await readChatLanguageModels(filePath);
+  const provider = findFireconnectProvider(arr);
+  if (!provider?.models?.length) {
+    return false;
+  }
+  const dropBodyKey = headerNames.some((name) => name.toLowerCase() === ANTHROPIC_BYOK_HEADER);
+  let changed = false;
+  const models = provider.models.map((model) => {
+    const headers = omitHeaders(model.requestHeaders, headerNames);
+    const dropBody = dropBodyKey && ANTHROPIC_BYOK_BODY_FIELD in model;
+    if (!headers && !dropBody) {
+      return model;
+    }
+    changed = true;
+    const next = { ...model };
+    if (dropBody) {
+      delete next[ANTHROPIC_BYOK_BODY_FIELD];
+    }
+    if (headers && Object.keys(headers).length) {
+      next.requestHeaders = headers;
+    } else if (headers) {
+      delete next.requestHeaders;
+    }
+    return next;
+  });
+  if (!changed) {
+    return false;
+  }
+  await writeChatLanguageModels(filePath, arr.map((entry) => (entry === provider ? { ...provider, models } : entry)));
+  return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -957,6 +1000,45 @@ export async function readVscodeStoredKey(vscodePath, stateDbPath, arr) {
   }
   const key = decryptSecret(stored, { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) });
   return isFireworksShapedKey(key) ? key.trim() : "";
+}
+
+/**
+ * Re-encrypt the Fireworks gateway key into the fireconnect provider's
+ * `state.vscdb` secret after a key rotation. Azure providers hold a Foundry
+ * key and are left alone. Throws while VS Code is running: it rewrites
+ * `state.vscdb` on exit and would silently drop the new key.
+ *
+ * Also throws, leaving the row untouched, when the existing secret can't be
+ * decrypted or when the rewrite would downgrade a Linux keyring (v11) secret
+ * to the obfuscated "peanuts" (v10) backend: our decrypt path has fallbacks
+ * the encrypt path doesn't, so overwriting there could replace a secret
+ * VS Code reads fine with one encrypted under a different scheme.
+ * @param {{ vscodePath: string, stateDbPath?: string, fireworksKey: string }} opts
+ * @returns {Promise<boolean>} whether the stored key changed
+ */
+export async function refreshVscodeGatewayKey({ vscodePath, stateDbPath, fireworksKey }) {
+  const arr = await readChatLanguageModels(vscodePath);
+  const secretId = fireconnectSecretIds(arr)[0];
+  if (!secretId || vscodeAzureProviderStatus(arr) === "azure") {
+    return false;
+  }
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  const cryptoOpts = { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) };
+  const stored = await readItemTableValue(dbPath, secretStorageKey(secretId));
+  const current = stored ? decryptSecret(stored, cryptoOpts).trim() : "";
+  if (current === fireworksKey) {
+    return false;
+  }
+  if (!current && storedSecretHasCiphertext(stored)) {
+    throw new Error("Could not decrypt VS Code's stored API key; left it unchanged.");
+  }
+  assertVscodeStopped();
+  const encrypted = encryptSecret(fireworksKey, cryptoOpts);
+  if (linuxSecretUsesKeyringBackend(stored) && linuxEncryptUsesBasicTextBackend(encrypted)) {
+    throw new Error("VS Code's API key is keyring-encrypted but FireConnect can only write an obfuscated one here; left it unchanged.");
+  }
+  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  return true;
 }
 
 /**

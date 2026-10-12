@@ -234,16 +234,57 @@ export function linuxSafeStorageIsObfuscatedFallback() {
  * @returns {boolean}
  */
 export function linuxEncryptUsesBasicTextBackend(encryptedJson) {
+  return linuxCiphertextVersion(encryptedJson) === "v10";
+}
+
+/**
+ * Whether a Linux safeStorage ciphertext JSON blob was encrypted with a keyring
+ * master password (v11) rather than the basic_text ("peanuts") backend (v10).
+ * @param {string} encryptedJson
+ * @returns {boolean}
+ */
+export function linuxSecretUsesKeyringBackend(encryptedJson) {
+  return linuxCiphertextVersion(encryptedJson) === "v11";
+}
+
+/**
+ * @param {string} encryptedJson
+ * @returns {string} the 3-byte OSCrypt version prefix on Linux, else "".
+ */
+function linuxCiphertextVersion(encryptedJson) {
   if (process.platform !== "linux" || plaintextMode()) {
-    return false;
+    return "";
   }
   try {
     const parsed = JSON.parse(encryptedJson);
     if (!parsed || !Array.isArray(parsed.data)) {
-      return false;
+      return "";
     }
     const blob = Buffer.from(parsed.data);
-    return blob.length >= 3 && blob.subarray(0, 3).toString("latin1") === "v10";
+    return blob.length >= 3 ? blob.subarray(0, 3).toString("latin1") : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Whether a `state.vscdb` secret value holds real ciphertext — i.e. it is not
+ * absent, not the empty-buffer "cleared" marker, and not unparseable garbage.
+ * Lets callers tell "nothing stored" apart from "stored but undecryptable",
+ * since {@link decryptSecret} returns "" for both.
+ * @param {string | null | undefined} stored
+ * @returns {boolean}
+ */
+export function storedSecretHasCiphertext(stored) {
+  if (!stored || stored === EMPTY_BUFFER_JSON) {
+    return false;
+  }
+  if (plaintextMode()) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed?.data) && parsed.data.length > 0;
   } catch {
     return false;
   }

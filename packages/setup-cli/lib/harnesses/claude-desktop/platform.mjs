@@ -25,13 +25,31 @@ function systemChangesAllowed({ allowSystemChanges = false } = {}) {
 }
 
 /**
- * Pure launchd plist builder (no side effects; heavily unit-tested).
- * @param {{ nodeExec: string, entry: string, home: string, logPath: string, errorPath: string }} args
+ * TLS trust for the shim's upstream calls. launchd starts it with a bare
+ * environment, so behind a TLS-inspecting proxy (Zscaler and the like) its
+ * fetch would reject the corporate root. Trust the macOS keychain when this
+ * Node supports it (22.15+/23.8+; an unknown flag would make node exit), and
+ * carry over an explicit NODE_EXTRA_CA_CERTS bundle.
  */
-export function buildLaunchAgentPlist({ nodeExec, entry, home, logPath, errorPath, label = SHIM_AGENT_LABEL }) {
+export function shimTrustOptions(env = process.env, allowedFlags = process.allowedNodeEnvironmentFlags) {
+  return {
+    nodeArgs: allowedFlags.has("--use-system-ca") ? ["--use-system-ca"] : [],
+    env: env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: env.NODE_EXTRA_CA_CERTS } : {},
+  };
+}
+
+/**
+ * Pure launchd plist builder (no side effects; heavily unit-tested).
+ * @param {{ nodeExec: string, nodeArgs?: string[], entry: string, home: string, env?: Record<string, string>, logPath: string, errorPath: string, label?: string }} args
+ */
+export function buildLaunchAgentPlist({ nodeExec, nodeArgs = [], entry, home, env = {}, logPath, errorPath, label = SHIM_AGENT_LABEL }) {
   const escape = (value) => String(value)
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+  const args = [nodeExec, ...nodeArgs, entry, "--home", home]
+    .map((arg) => `    <string>${escape(arg)}</string>`).join("\n");
+  const vars = Object.entries({ ...env, HOME: home })
+    .map(([name, value]) => `    <key>${escape(name)}</key><string>${escape(value)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,14 +57,11 @@ export function buildLaunchAgentPlist({ nodeExec, entry, home, logPath, errorPat
   <key>Label</key><string>${escape(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escape(nodeExec)}</string>
-    <string>${escape(entry)}</string>
-    <string>--home</string>
-    <string>${escape(home)}</string>
+${args}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>HOME</key><string>${escape(home)}</string>
+${vars}
   </dict>
   <key>StandardOutPath</key><string>${escape(logPath)}</string>
   <key>StandardErrorPath</key><string>${escape(errorPath)}</string>

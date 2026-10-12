@@ -83,6 +83,42 @@ describe("uninstall", () => {
     assert.equal(await pathExists(path.join(home, ".fireconnect")), false);
   });
 
+  it("restores codex from a legacy fireworks-azure routing on uninstall", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-legacy-azure-"));
+    await mkdir(path.join(home, ".codex"), { recursive: true });
+
+    // The state an Azure-enabled install is left in after the Azure removal:
+    // config.toml still routes through fireworks-azure (which Codex CLI 0.160+
+    // refuses to load), and the pre-FireConnect snapshot is the only way back.
+    const configPath = codexConfigPath(home);
+    const codexOriginal = 'model = "gpt-4.1"\n';
+    const legacyAzureRouting = [
+      'model_provider = "fireworks-azure"',
+      'model = "FW-GLM-5.2"',
+      "",
+      "[model_providers.fireworks-azure]",
+      'name = "Fireworks Azure"',
+      'base_url = "https://example-resource.services.ai.azure.com/openai/v1"',
+      'wire_api = "chat"',
+      'env_key = "AZURE_API_KEY"',
+      "requires_openai_auth = false",
+    ].join("\n") + "\n";
+    await writeFile(configPath, legacyAzureRouting);
+
+    const backupPath = codexBackupPath(codexDataDir(home), configPath);
+    await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
+    await writeJson(backupPath, {
+      configPath: path.resolve(configPath),
+      snapshot: { existed: true, raw: codexOriginal },
+    });
+
+    const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
+    assert.equal(uninstallResult.code, 0, uninstallResult.stderr);
+
+    assert.equal(await readFile(configPath, "utf8"), codexOriginal);
+    assert.equal(await pathExists(path.join(home, ".fireconnect/codex")), false);
+  });
+
   it("keeps codex catalog when uninstall cannot disable codex", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-codex-off-fail-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });

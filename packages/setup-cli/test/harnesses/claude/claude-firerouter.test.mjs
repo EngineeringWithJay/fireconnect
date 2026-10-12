@@ -157,7 +157,6 @@ describe("Claude FireRouter via --model", () => {
         "claude", "on",
         "--api-key", FIREWORKS_KEY,
         "--model", "firerouter",
-        "--anthropic-api-key", ANTHROPIC_KEY,
       ],
       cliEnv(home),
     );
@@ -170,22 +169,18 @@ describe("Claude FireRouter via --model", () => {
     assert.notDeepEqual(await readJsonIfExists(providerBackupPath(dataDir)), {});
   });
 
-  it("explicit firerouter with --anthropic-api-key does not use Fireworks token auth fallback", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-byok-no-fallback-"));
+  it("keeps an Anthropic key the user set in Claude's settings before FireConnect", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-native-key-"));
+    await writeJson(userSettingsPath(home), { env: { ANTHROPIC_API_KEY: ANTHROPIC_KEY } });
     const result = await runFireconnect(
-      [
-        "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-        "--model", "firerouter",
-        "--anthropic-api-key", ANTHROPIC_KEY,
-      ],
+      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "firerouter"],
       cliEnv(home),
     );
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(settings.env.ANTHROPIC_API_KEY, ANTHROPIC_KEY);
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assert.doesNotMatch(result.stdout, /FireRouter off/);
+    assert.doesNotMatch(result.stdout, /FireRouter off|removed the one/);
   });
 
   it("pins per-tier slot flags alongside --model firerouter", async () => {
@@ -215,7 +210,6 @@ describe("Claude FireRouter via --model", () => {
         "claude", "on",
         "--api-key", FIREWORKS_KEY,
         "--model", "firerouter",
-        "--anthropic-api-key", ANTHROPIC_KEY,
       ],
       env,
     );
@@ -231,14 +225,14 @@ describe("Claude FireRouter via --model", () => {
     assertClaudeRegisterablePicker(settings, { includes: [FIREROUTER_MODEL] });
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-routing-preference: 5/);
 
+    const before = await readFile(userSettingsPath(home), "utf8");
     const byok = await runFireconnect(
       ["claude", "on", "--anthropic-api-key", ANTHROPIC_KEY],
       env,
     );
-    assert.equal(byok.code, 0, byok.stderr);
-    settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assert.equal(settings.env.ANTHROPIC_API_KEY, ANTHROPIC_KEY);
-    assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
+    assert.notEqual(byok.code, 0);
+    assert.match(byok.stderr, /Claude Code pays for Claude turns with its own sign-in/);
+    assert.equal(await readFile(userSettingsPath(home), "utf8"), before);
   });
 
   it("off restores the original settings byte-for-byte", async () => {
@@ -272,7 +266,6 @@ describe("Claude FireRouter via --model", () => {
         "claude", "on",
         "--model", "firerouter",
         "--api-key", FIREWORKS_KEY,
-        "--anthropic-api-key", ANTHROPIC_KEY,
       ],
       cliEnv(modelHome),
     );
@@ -332,7 +325,6 @@ describe("Claude FireRouter via --model", () => {
           "claude", "on",
           "--api-key", FIREWORKS_KEY,
           "--model", "firerouter",
-          "--anthropic-api-key", ANTHROPIC_KEY,
         ],
         cliEnv(home),
       )).code,
@@ -353,7 +345,6 @@ describe("Claude FireRouter via --model", () => {
         "claude", "on",
         "--api-key", FIREWORKS_KEY,
         "--model", "firerouter",
-        "--anthropic-api-key", ANTHROPIC_KEY,
         "--routing-preference", "max-intelligence",
       ],
       cliEnv(home),
@@ -401,7 +392,6 @@ describe("Claude FireRouter via --model", () => {
         "claude", "on",
         "--api-key", FIREWORKS_KEY,
         "--model", "firerouter",
-        "--anthropic-api-key", ANTHROPIC_KEY,
       ],
       cliEnv(home),
     );

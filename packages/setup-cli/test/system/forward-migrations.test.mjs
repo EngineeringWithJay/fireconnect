@@ -14,6 +14,10 @@ import { piModelsPath, piSettingsPath } from "../../lib/harnesses/pi/core.mjs";
 import { runHarnessForwardMigrations } from "../../lib/system/forward-migrations.mjs";
 import { warmTestCatalogSnapshot, withTempHome } from "../helpers.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import {
+  clearModelsDevFireworksRegistry,
+  setModelsDevFireworksRegistry,
+} from "../../lib/fireworks/models-dev-registry.mjs";
 
 describe("runHarnessForwardMigrations", () => {
   before(() => {
@@ -263,6 +267,140 @@ describe("runHarnessForwardMigrations", () => {
       assert.ok(opencode.provider["fireworks-ai"].models.auto);
       const piModels = JSON.parse(await readFile(piModelsPath(home), "utf8"));
       assert.ok(piModels.providers.fireworks.models.some((m) => m.id === "auto"));
+    });
+  });
+
+  it("mirrors a pre-upgrade OpenCode provider into an existing v2 providers map", async () => {
+    await withTempHome("forward-migrate-opencode-v2-", async (home) => {
+      await writeGlobalConfig(home, {
+        harnesses: { opencode: { enabled: true, provider: "fireworks" } },
+      });
+      const configPath = opencodeConfigPath(home);
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(
+        configPath,
+        `${JSON.stringify({
+          model: "fireworks-ai/auto",
+          provider: {
+            "fireworks-ai": {
+              options: { apiKey: "fw_test_key_12345" },
+              models: { auto: { name: "Auto", modalities: { input: ["text", "image"] } } },
+            },
+          },
+          providers: { "fireworks-ai": { settings: { apiKey: "fw_test_key_12345" } } },
+        })}\n`,
+      );
+
+      const notes = await runHarnessForwardMigrations(home);
+      assert.equal(notes.filter((n) => /OpenCode v2/.test(n)).length, 1, notes.join("\n"));
+      const native = JSON.parse(await readFile(configPath, "utf8")).providers["fireworks-ai"];
+      assert.deepEqual(native.models.auto, {
+        name: "Auto",
+        capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+      });
+
+      const again = await runHarnessForwardMigrations(home);
+      assert.equal(again.filter((n) => /OpenCode/.test(n)).length, 0, again.join("\n"));
+    });
+  });
+
+  async function writeOpencodeUpgradeFixture(home, { enabled = true, config }) {
+    await writeGlobalConfig(home, {
+      harnesses: { opencode: { enabled, provider: "fireworks" } },
+    });
+    const configPath = opencodeConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const original = `${JSON.stringify(config)}\n`;
+    await writeFile(configPath, original);
+    return { configPath, original };
+  }
+
+  const managedOpencodeConfig = {
+    model: "fireworks-ai/auto",
+    provider: {
+      "fireworks-ai": { options: { apiKey: "fw_test_key_12345" }, models: { auto: { name: "Auto" } } },
+    },
+  };
+
+  it("leaves a v1-only OpenCode config alone on upgrade", async () => {
+    await withTempHome("forward-migrate-opencode-v1-", async (home) => {
+      const { configPath, original } = await writeOpencodeUpgradeFixture(home, { config: managedOpencodeConfig });
+      await runHarnessForwardMigrations(home);
+      assert.equal(await readFile(configPath, "utf8"), original);
+    });
+  });
+
+  it("leaves a v2 OpenCode config alone on upgrade when the harness is off", async () => {
+    await withTempHome("forward-migrate-opencode-off-", async (home) => {
+      const { configPath, original } = await writeOpencodeUpgradeFixture(home, {
+        enabled: false,
+        config: { ...managedOpencodeConfig, providers: {} },
+      });
+      await runHarnessForwardMigrations(home);
+      assert.equal(await readFile(configPath, "utf8"), original);
+    });
+  });
+
+  it("keeps native v2 entries without a managed v1 counterpart on upgrade", async () => {
+    await withTempHome("forward-migrate-opencode-native-", async (home) => {
+      const native = { "fireworks-ai": { settings: { apiKey: "{env:MY_FW}" } } };
+      const { configPath } = await writeOpencodeUpgradeFixture(home, {
+        config: {
+          model: "fireworks/glm-latest",
+          provider: { fireworks: { options: { apiKey: "fw_test_key_12345" } } },
+          providers: native,
+        },
+      });
+      const notes = await runHarnessForwardMigrations(home);
+      assert.equal(notes.filter((n) => /OpenCode v2/.test(n)).length, 0, notes.join("\n"));
+      assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).providers, native);
+    });
+  });
+
+  const pickerDuplicateConfig = {
+    model: "fireworks-ai/glm-latest",
+    provider: {
+      "fireworks-ai": {
+        options: { apiKey: "fw_test_key_12345" },
+        models: {
+          auto: { name: "Auto" },
+          "glm-latest": { name: "GLM 5.3 (Latest)" },
+          "kimi-latest": { name: "Kimi K3 (Latest)" },
+        },
+      },
+    },
+    providers: {},
+  };
+
+  it("removes OpenCode picker duplicates of models.dev routers on upgrade", async () => {
+    setModelsDevFireworksRegistry(["accounts/fireworks/routers/glm-latest"]);
+    try {
+      await withTempHome("forward-migrate-opencode-dupes-", async (home) => {
+        const { configPath } = await writeOpencodeUpgradeFixture(home, { config: pickerDuplicateConfig });
+
+        const notes = await runHarnessForwardMigrations(home);
+        assert.equal(notes.filter((n) => /duplicate Fireworks models/.test(n)).length, 1, notes.join("\n"));
+        const config = JSON.parse(await readFile(configPath, "utf8"));
+        assert.equal(config.model, "fireworks-ai/accounts/fireworks/routers/glm-latest");
+        assert.deepEqual(Object.keys(config.provider["fireworks-ai"].models), ["auto", "kimi-latest"]);
+        assert.deepEqual(Object.keys(config.providers["fireworks-ai"].models), ["auto", "kimi-latest"]);
+
+        const again = await runHarnessForwardMigrations(home);
+        assert.equal(again.filter((n) => /OpenCode/.test(n)).length, 0, again.join("\n"));
+      });
+    } finally {
+      clearModelsDevFireworksRegistry();
+    }
+  });
+
+  it("keeps OpenCode overrides on upgrade while models.dev is unavailable", async () => {
+    clearModelsDevFireworksRegistry();
+    await withTempHome("forward-migrate-opencode-offline-", async (home) => {
+      const config = { ...pickerDuplicateConfig, providers: undefined };
+      const { configPath, original } = await writeOpencodeUpgradeFixture(home, { config });
+      const notes = await runHarnessForwardMigrations(home);
+      assert.equal(notes.filter((n) => /duplicate Fireworks models/.test(n)).length, 0, notes.join("\n"));
+      assert.equal(await readFile(configPath, "utf8"), original);
     });
   });
 

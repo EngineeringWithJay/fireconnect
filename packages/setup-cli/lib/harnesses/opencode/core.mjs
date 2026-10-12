@@ -37,6 +37,7 @@ import {
 } from "../../fireworks/models-dev-registry.mjs";
 import { lookupCachedContextLength } from "../../fireworks/serverless-catalog-cache.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
+import { omitHeaders } from "../../firerouter/core.mjs";
 import {
   detectApiKeyType,
   isFireworksShapedKey,
@@ -45,6 +46,7 @@ import {
 import { isHarnessEnabled } from "../../config/global-config.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
+import { dropOpencodeProvider, mirrorOpencodeV2Providers } from "./providers-v2.mjs";
 
 /**
  * Restore a raw config snapshot from a backup (or delete the config when the
@@ -81,16 +83,49 @@ export const OPENCODE_DATA_RELATIVE_DIR = ".fireconnect/opencode";
 export const OPENCODE_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
 export const OPENCODE_FIREWORKS_PROVIDER_ID = "fireworks-ai";
 export const OPENCODE_AZURE_PROVIDER_ID = "fireworks-azure";
+export const OPENCODE_MANAGED_PROVIDER_IDS = [OPENCODE_FIREWORKS_PROVIDER_ID, OPENCODE_AZURE_PROVIDER_ID];
+
+/**
+ * Every opencode.json write goes through here so a v2 `providers` map can
+ * never drift from the managed `provider` entries.
+ * @param {string} configPath
+ * @param {Record<string, any>} config
+ * @param {{ mode?: number }} [opts]
+ */
+export async function writeOpencodeConfig(configPath, config, { mode } = {}) {
+  const next = mirrorOpencodeV2Providers(config, OPENCODE_MANAGED_PROVIDER_IDS);
+  await writeJson(configPath, next, { mode });
+  return next;
+}
+
+function isEmptyObject(value) {
+  return typeof value === "object" && value !== null && Object.keys(value).length === 0;
+}
+
+/** Drop the provider id FireConnect used before `fireworks-ai`; it never had a v2 mirror. */
+function withoutRetiredFireworksProvider(config) {
+  if (!config.provider?.fireworks) {
+    return config;
+  }
+  const { fireworks: _retired, ...provider } = config.provider;
+  return { ...config, provider };
+}
 
 /**
  * Whether FireConnect should write a provider.models entry for this model.
- * FireRouter, `auto` / `auto-*`, `-latest` router aliases, and catalog models
- * absent from models.dev need provider overrides (display name, modalities,
- * limits). Standard catalog entries on models.dev only need config.model.
+ * Anything models.dev already lists is in OpenCode's picker under its full id,
+ * so an override would only add a duplicate row. Otherwise FireRouter,
+ * `auto` / `auto-*`, `-latest` router aliases, and catalog models need
+ * overrides (display name, modalities, limits).
  * @param {string} modelId
  */
 export function opencodeNeedsProviderModelOverride(modelId) {
   if (!modelId || typeof modelId !== "string") {
+    return false;
+  }
+  const canonical = fullFireworksResourceId(modelId);
+  const registryStatus = modelsDevRegistryStatus(canonical);
+  if (registryStatus === "present") {
     return false;
   }
   if (isFirerouterModelPattern(modelId) || isAutoModelId(modelId)) {
@@ -101,7 +136,6 @@ export function opencodeNeedsProviderModelOverride(modelId) {
     return true;
   }
 
-  const canonical = fullFireworksResourceId(modelId);
   if (!canonical.startsWith("accounts/fireworks/")) {
     return false;
   }
@@ -111,16 +145,26 @@ export function opencodeNeedsProviderModelOverride(modelId) {
     return false;
   }
 
-  const registryStatus = modelsDevRegistryStatus(canonical);
-  if (registryStatus === "present") {
-    return false;
-  }
   if (registryStatus === "absent") {
     return true;
   }
 
   // Registry unavailable: override serverless-catalog models not assumed on models.dev.
   return Boolean(lookupCachedContextLength(canonical)) && !assumedModelsDevListed(modelId);
+}
+
+function isModelsDevDuplicate(id) {
+  const canonical = fullFireworksResourceId(id);
+  return canonical !== id && modelsDevRegistryStatus(canonical) === "present";
+}
+
+/**
+ * Drop short-key rows (written by earlier releases) for models OpenCode now
+ * lists from models.dev under their full id; they show up twice in `/models`.
+ * @param {Record<string, unknown>} models
+ */
+export function withoutModelsDevDuplicates(models) {
+  return Object.fromEntries(Object.entries(models).filter(([id]) => !isModelsDevDuplicate(id)));
 }
 
 /**
@@ -389,11 +433,8 @@ export async function enableOpencodeFireworks({
     await chmod(backupPath, 0o600);
   }
 
-  const provider = { ...(config.provider ?? {}) };
-  delete provider.fireworks;
-  delete provider[OPENCODE_AZURE_PROVIDER_ID];
-
-  const existing = provider[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
+  const base = dropOpencodeProvider(withoutRetiredFireworksProvider(config), OPENCODE_AZURE_PROVIDER_ID);
+  const existing = base.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
   // FireRouter BYOK header (x-anthropic-api-key) lets the gateway pass hard
   // requests through to Anthropic. Drop any stale one when none is supplied
   // (e.g. switching firerouter → a direct model). x-openai-api-key is dropped
@@ -466,23 +507,17 @@ export async function enableOpencodeFireworks({
     // Fresh entries overwrite kept rows (metadata refresh) and fill the gaps.
     models = { ...models, ...buildModels(catalog) };
   }
-  provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {
-    ...existing,
-    options: nextOptions,
-    models,
-  };
-
-  const next = {
-    ...config,
-    provider,
-    model: `${prefix}${opencodeConfigModelRef(resolvedModel)}`,
-  };
-
+  models = withoutModelsDevDuplicates(models);
   const hasLiteralSecret = Boolean(storedApiKey)
     || Object.keys(byokHeaders ?? {}).length > 0;
-  await writeJson(configPath, next, {
-    mode: hasLiteralSecret ? 0o600 : undefined,
-  });
+  const next = await writeOpencodeConfig(configPath, {
+    ...base,
+    provider: {
+      ...base.provider,
+      [OPENCODE_FIREWORKS_PROVIDER_ID]: { ...existing, options: nextOptions, models },
+    },
+    model: `${prefix}${opencodeConfigModelRef(resolvedModel)}`,
+  }, { mode: hasLiteralSecret ? 0o600 : undefined });
   return {
     model: next.model,
     modelsAdded: Object.keys(next.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]?.models ?? {}),
@@ -536,16 +571,13 @@ export async function enableOpencodeAzure({
     await chmod(backupPath, 0o600);
   }
 
-  const provider = { ...(config.provider ?? {}) };
-  delete provider.fireworks;
-  delete provider[OPENCODE_FIREWORKS_PROVIDER_ID];
-
-  const existing = provider[OPENCODE_AZURE_PROVIDER_ID] ?? {};
+  const base = dropOpencodeProvider(withoutRetiredFireworksProvider(config), OPENCODE_FIREWORKS_PROVIDER_ID);
+  const existing = base.provider?.[OPENCODE_AZURE_PROVIDER_ID] ?? {};
   const resolvedModel = modelId || opencodeProviderStatus(config) === "azure"
     ? (modelId || opencodeCurrentModelId(config) || DEFAULT_AZURE_MODEL)
     : DEFAULT_AZURE_MODEL;
   const apiKeyValue = apiKeyFromFlag ? apiKey : AZURE_API_KEY_ENV_REF;
-  provider[OPENCODE_AZURE_PROVIDER_ID] = {
+  const azureProvider = {
     ...existing,
     npm: AZURE_OPENAI_COMPATIBLE_NPM,
     name: AZURE_PROVIDER_LABEL,
@@ -560,13 +592,11 @@ export async function enableOpencodeAzure({
     },
   };
 
-  const next = {
-    ...config,
-    provider,
+  const next = await writeOpencodeConfig(configPath, {
+    ...base,
+    provider: { ...base.provider, [OPENCODE_AZURE_PROVIDER_ID]: azureProvider },
     model: `${OPENCODE_AZURE_PROVIDER_ID}/${resolvedModel}`,
-  };
-
-  await writeJson(configPath, next, { mode: apiKeyFromFlag ? 0o600 : undefined });
+  }, { mode: apiKeyFromFlag ? 0o600 : undefined });
   return {
     model: next.model,
     baseUrl: normalizedBaseUrl,
@@ -609,34 +639,31 @@ export async function disableOpencodeFireworks({ configPath, dataDir, wasEnabled
     return "unchanged";
   }
   const liveConfig = await readJsonIfExists(configPath);
-  let changed = false;
-  for (const providerId of [
-    OPENCODE_FIREWORKS_PROVIDER_ID,
-    OPENCODE_AZURE_PROVIDER_ID,
-    "fireworks",
-  ]) {
-    if (liveConfig.provider?.[providerId]) {
-      delete liveConfig.provider[providerId];
-      changed = true;
-    }
-  }
-  if (typeof liveConfig.model === "string"
+  let stripped = OPENCODE_MANAGED_PROVIDER_IDS.reduce(
+    (config, id) => dropOpencodeProvider(config, id),
+    withoutRetiredFireworksProvider(liveConfig),
+  );
+  if (typeof stripped.model === "string"
     && (
-      liveConfig.model.startsWith(prefix)
-      || liveConfig.model.startsWith(azurePrefix)
-      || liveConfig.model.startsWith("fireworks/")
+      stripped.model.startsWith(prefix)
+      || stripped.model.startsWith(azurePrefix)
+      || stripped.model.startsWith("fireworks/")
     )) {
-    delete liveConfig.model;
-    changed = true;
+    const { model: _model, ...rest } = stripped;
+    stripped = rest;
   }
-  if (liveConfig.provider && Object.keys(liveConfig.provider).length === 0) {
-    delete liveConfig.provider;
-    changed = true;
-  }
-  if (!changed) {
+  if (stripped === liveConfig && !isEmptyObject(liveConfig.provider)) {
     return "unchanged";
   }
-  await writeJson(configPath, liveConfig);
+  if (isEmptyObject(stripped.provider)) {
+    const { provider: _empty, ...rest } = stripped;
+    stripped = rest;
+  }
+  if (stripped.providers !== liveConfig.providers && isEmptyObject(stripped.providers)) {
+    const { providers: _empty, ...rest } = stripped;
+    stripped = rest;
+  }
+  await writeJson(configPath, stripped);
   return "stripped";
 }
 
@@ -653,25 +680,12 @@ export async function refreshOpencodeGatewayKey({ configPath, fireworksKey }) {
   const config = await readJsonIfExists(configPath);
   const gateway = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID];
   const current = gateway?.options?.apiKey;
-  const mode = opencodeAuthKeyMode(typeof current === "string" ? current : "");
-  if (mode === "env-reference") {
-    const next = {
-      ...config,
-      provider: {
-        ...config.provider,
-        [OPENCODE_FIREWORKS_PROVIDER_ID]: {
-          ...gateway,
-          options: { ...gateway.options, apiKey: key },
-        },
-      },
-    };
-    await writeJson(configPath, next, { mode: 0o600 });
-    return true;
-  }
-  if (typeof current !== "string" || !isFireworksShapedKey(current) || current === key) {
+  const envReference = opencodeAuthKeyMode(typeof current === "string" ? current : "") === "env-reference";
+  const rotatable = typeof current === "string" && isFireworksShapedKey(current) && current !== key;
+  if (!envReference && !rotatable) {
     return false;
   }
-  const next = {
+  await writeOpencodeConfig(configPath, {
     ...config,
     provider: {
       ...config.provider,
@@ -680,7 +694,33 @@ export async function refreshOpencodeGatewayKey({ configPath, fireworksKey }) {
         options: { ...gateway.options, apiKey: key },
       },
     },
-  };
-  await writeJson(configPath, next, { mode: 0o600 });
+  }, { mode: 0o600 });
+  return true;
+}
+
+/**
+ * Drop saved provider keys from the gateway `fireworks-ai` provider's
+ * `options.headers`, after `fireconnect configure --unset anthropic-api-key` / `--unset openai-api-key`.
+ * @param {{ configPath: string, headerNames: string[] }} opts
+ * @returns {Promise<boolean>} whether opencode.json changed
+ */
+export async function removeOpencodeSavedProviderKeys({ configPath, headerNames }) {
+  const config = await readJsonIfExists(configPath);
+  const gateway = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID];
+  const headers = omitHeaders(gateway?.options?.headers, headerNames);
+  if (!headers) {
+    return false;
+  }
+  const { headers: _dropped, ...options } = gateway.options;
+  await writeOpencodeConfig(configPath, {
+    ...config,
+    provider: {
+      ...config.provider,
+      [OPENCODE_FIREWORKS_PROVIDER_ID]: {
+        ...gateway,
+        options: Object.keys(headers).length ? { ...options, headers } : options,
+      },
+    },
+  }, { mode: 0o600 });
   return true;
 }

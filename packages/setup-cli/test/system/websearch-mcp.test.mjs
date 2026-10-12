@@ -4,7 +4,6 @@ import os from "node:os";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import {
   SHELL_HOOK_BEGIN,
   SHELL_HOOK_END,
@@ -88,33 +87,12 @@ describe("websearch-mcp", () => {
       `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: legacyWebsearchMcpEntry(TEST_KEY) } }, null, 2)}\n`,
       "utf8",
     );
-    await installShellEnvHook(home, { includeFireworks: true });
+    await installShellEnvHook(home);
     assert.match(await readFile(resolveShellConfigPath(home), "utf8"), /export FIREWORKS_API_KEY=/);
 
     await disableWebsearchMcp(home);
     const shell = await readFile(resolveShellConfigPath(home), "utf8");
     assert.equal(shell.includes(SHELL_HOOK_BEGIN), false);
     assert.equal(shell.includes(SHELL_HOOK_END), false);
-  });
-
-  it("does not remove Codex Anthropic shell export when retiring websearch MCP", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-codex-hook-"));
-    process.env.HOME = home;
-    process.env.SHELL = "/bin/zsh";
-    await writeFile(
-      claudeJsonPath(home),
-      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: legacyWebsearchMcpEntry(TEST_KEY) } }, null, 2)}\n`,
-      "utf8",
-    );
-    await writeGlobalConfig(home, {
-      anthropicApiKey: "sk-ant-stored",
-      harnesses: { codex: { enabled: true } },
-    });
-    await installShellEnvHook(home, { includeFireworks: true, includeAnthropic: true });
-
-    await disableWebsearchMcp(home);
-    const shell = await readFile(resolveShellConfigPath(home), "utf8");
-    assert.doesNotMatch(shell, /export FIREWORKS_API_KEY=/);
-    assert.match(shell, /export ANTHROPIC_API_KEY=/);
   });
 });

@@ -39,9 +39,10 @@ async function exportOpenaiApiKey(home, { storedOnly = false } = {}) {
 }
 
 /**
- * Internal key resolver — NOT a user-facing command. `fireconnect key export`
- * is the entrypoint the Claude apiKeyHelper and the codex/opencode/pi shell
- * hooks invoke at runtime to print the resolved Fireworks key. User-facing key
+ * Key resolver. `fireconnect key export` is the entrypoint the Claude
+ * apiKeyHelper and the legacy env-ref shell hook invoke at runtime to print the
+ * resolved Fireworks key; `--openai` / `--anthropic` print a provider key, as
+ * in the README's `key export --openai | codex login --with-api-key`. Key
  * management lives in `login` / `logout` / `status`.
  *
  * @param {import("../../harness/types.mjs").HarnessContext} ctx

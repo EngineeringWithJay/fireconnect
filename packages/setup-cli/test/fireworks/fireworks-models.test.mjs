@@ -191,6 +191,66 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     }
   }
 
+  /** Assert a cold-cache load rejects, and return the rejection's message. */
+  async function coldStartError(fetchImpl) {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-catalog-cold-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    let message = "";
+    try {
+      await assert.rejects(loadServerlessCatalog({ apiKey: "fw_test_key" }), (error) => {
+        message = error.message;
+        return true;
+      });
+      return message;
+    } finally {
+      globalThis.fetch = previousFetch;
+      process.env.HOME = prevHome;
+      setServerlessCatalogSnapshot(null);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  const httpFailure = (status, statusText, body) => async () => ({
+    ok: false,
+    status,
+    statusText,
+    text: async () => body,
+  });
+
+  test("cold-start catalog error reports the gateway's answer instead of blaming the network", async () => {
+    const message = await coldStartError(
+      httpFailure(500, "Internal Server Error", "Error listing serverless models\n"),
+    );
+    assert.equal(
+      message,
+      "Couldn't fetch the Fireworks model catalog and no cached copy exists yet. "
+        + "Fireworks API 500 Internal Server Error: Error listing serverless models. "
+        + "Retry once the Fireworks API recovers. "
+        + "Once `fireconnect model list` succeeds, the catalog is cached for offline use.",
+    );
+  });
+
+  test("cold-start catalog error keeps the gateway's 401/403 reason without retry advice", async () => {
+    const forbidden = await coldStartError(
+      httpFailure(403, "Forbidden", "access requires an approved network\n"),
+    );
+    assert.match(forbidden, /rejected the request \(403: access requires an approved network\)\. /);
+    assert.doesNotMatch(forbidden, /Check your network|Retry once/);
+    const unauthorized = await coldStartError(httpFailure(401, "Unauthorized", ""));
+    assert.match(unauthorized, /rejected the API key \(401\)\. Check FIREWORKS_API_KEY/);
+    assert.doesNotMatch(unauthorized, /Retry once/);
+  });
+
+  test("cold-start catalog error points at the network when the request never landed", async () => {
+    const message = await coldStartError(async () => {
+      throw new Error("getaddrinfo ENOTFOUND api.fireworks.ai");
+    });
+    assert.match(message, /Couldn't reach Fireworks \(getaddrinfo ENOTFOUND api\.fireworks\.ai\)\. Check your network connection\./);
+  });
+
   test("loadServerlessCatalog refresh ignores a fresh cache and refetches", async () => {
     let fetches = 0;
     const fetchImpl = async () => {

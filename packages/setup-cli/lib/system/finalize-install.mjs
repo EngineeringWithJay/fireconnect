@@ -6,30 +6,38 @@ import { reconcileHarnessConfigOnUpgrade } from "../keys/sync.mjs";
 import { reprobeKeyStorage } from "../keys/secret-store.mjs";
 import { resolveFireworksApiKeyValue } from "../keys/api-key.mjs";
 import { loadServerlessCatalog } from "../fireworks/models.mjs";
+import { codexConfigPath } from "../harnesses/codex/core.mjs";
+import { refreshCodexStockModels } from "../harnesses/codex/stock-models.mjs";
+import { reapplyCodexOnUpgrade } from "../harnesses/codex/upgrade-reon.mjs";
+import { isEnabledFireworksHarness, readGlobalConfig } from "../config/global-config.mjs";
+import { HARNESS } from "../harness/id.mjs";
+import { refreshListPriceCache } from "../pricing/list-price-cache.mjs";
 import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs";
 import { runHarnessForwardMigrations } from "./forward-migrations.mjs";
 
 /**
- * Best-effort serverless catalog refresh so upgrade/reinstall leave a fresh
- * snapshot behind — otherwise the new models/aliases a release advertises
- * only appear after the user's next online `on`. Silent in both directions:
- * offline installs keep serving their last-known snapshot, and keyless
- * installs (nothing to fetch with) skip entirely.
+ * Refresh every model source the harness pickers are built from, before the
+ * upgrade's harness steps rebuild them: the Fireworks serverless catalog,
+ * models.dev (OpenAI and Anthropic models with their list prices), and stock
+ * Codex's own model list when Codex is connected. They run together, each
+ * bounded by its own timeout, and all are best-effort: offline keeps the
+ * last-known snapshots, and a keyless install skips the serverless catalog.
  * @param {string} home
- * @returns {Promise<boolean>} true when the cache was refreshed
+ * @returns {Promise<{ serverless: boolean, modelsDev: boolean, codex: boolean }>} which sources were refreshed
  */
-export async function refreshServerlessCatalog(home) {
-  const apiKey = await resolveFireworksApiKeyValue({ home });
-  if (!apiKey.trim()) {
-    return false;
-  }
-  try {
-    await loadServerlessCatalog({ apiKey: apiKey.trim(), refresh: true });
-    return true;
-  } catch {
-    // Offline or dead key — keep serving the last-known snapshot.
-    return false;
-  }
+export async function refreshModelSources(home) {
+  const apiKey = (await resolveFireworksApiKeyValue({ home }).catch(() => "")).trim();
+  const { harnesses } = await readGlobalConfig(home).catch(() => ({ harnesses: {} }));
+  const [serverless, modelsDev, codex] = await Promise.all([
+    apiKey
+      ? loadServerlessCatalog({ apiKey, refresh: true }).then(() => true, () => false)
+      : false,
+    refreshListPriceCache({ force: true }),
+    isEnabledFireworksHarness(harnesses, HARNESS.CODEX)
+      ? refreshCodexStockModels({ codexHome: path.dirname(codexConfigPath(home)) })
+      : false,
+  ]);
+  return { serverless, modelsDev, codex };
 }
 
 /**
@@ -39,8 +47,9 @@ export async function refreshServerlessCatalog(home) {
  * after the CLI bits are on disk goes through this path:
  *   1. ensure runtime npm deps
  *   2. re-probe secret storage / migrate plaintext → secure
- *   3. refresh the serverless catalog snapshot (best-effort, silent)
+ *   3. refresh the model sources: serverless catalog, models.dev, stock Codex (best-effort, silent)
  *   4. run key-independent harness migrations, then rebake keys / shell hook
+ *   5. re-run `codex on` when Codex's config or GPT rows are out of date
  *
  * Never throws for reconcile/shell failures (best-effort). Dep install and
  * key-storage probe may throw only if callers choose to surface them — this
@@ -53,9 +62,10 @@ export async function refreshServerlessCatalog(home) {
  *   log?: (...args: unknown[]) => void,
  *   ensureDeps?: typeof ensureCliDependencies,
  *   reprobe?: typeof reprobeKeyStorage,
- *   refreshCatalog?: typeof refreshServerlessCatalog,
+ *   refreshCatalog?: typeof refreshModelSources,
  *   migrate?: typeof runHarnessForwardMigrations,
  *   reconcile?: typeof reconcileHarnessConfigOnUpgrade,
+ *   codexSignIn?: typeof reapplyCodexOnUpgrade,
  * }} [options]
  * @returns {Promise<{ notes: string[], migrated: boolean, setupDir: string }>}
  */
@@ -66,9 +76,10 @@ export async function finalizeInstallOrUpgrade({
   log = console.log,
   ensureDeps = ensureCliDependencies,
   reprobe = reprobeKeyStorage,
-  refreshCatalog = refreshServerlessCatalog,
+  refreshCatalog = refreshModelSources,
   migrate = runHarnessForwardMigrations,
   reconcile = reconcileHarnessConfigOnUpgrade,
+  codexSignIn = reapplyCodexOnUpgrade,
 } = {}) {
   const notes = [];
   const durableSetup = installDir
@@ -123,6 +134,13 @@ export async function finalizeInstallOrUpgrade({
       }
     } catch {
       // Best-effort reconcile.
+    }
+
+    // After the rebake, so a legacy env-reference config already holds a
+    // literal key for the re-`on` to reuse.
+    for (const note of await codexSignIn(home)) {
+      log(note);
+      notes.push(note);
     }
   }
 

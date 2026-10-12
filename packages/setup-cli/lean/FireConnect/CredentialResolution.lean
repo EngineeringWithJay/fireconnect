@@ -210,46 +210,4 @@ theorem stripManaged_spot :
       ["x-anthropic-api-key", "x-user-trace"] = ["x-user-trace"] := by
   native_decide
 
-/-- Codex env-reference mapping (header name → env var NAME). Mirrors
-`firerouterByokEnvRefHeaders`: each env ref appears only when the selection
-needs it *and* a key is actually behind it, so a dangling ref can never send
-an empty header upstream. -/
-def codexEnvRefs
-    (requiresAnthropic bareFirerouter requiresOpenai
-      anthropicKeyPresent openaiKeyPresent : Bool) :
-    List (String × String) :=
-  (if (requiresAnthropic && anthropicKeyPresent)
-      then [("x-anthropic-api-key", "ANTHROPIC_API_KEY")] else [])
-    ++ (if ((bareFirerouter || requiresOpenai) && openaiKeyPresent)
-        then [("x-openai-api-key", "OPENAI_API_KEY")] else [])
-
-/-- Exact wire names on bare `firerouter` with a key behind each ref. -/
-theorem codexEnvRefs_bare_firerouter_spot :
-    codexEnvRefs true true false true true =
-      [("x-anthropic-api-key", "ANTHROPIC_API_KEY"),
-       ("x-openai-api-key", "OPENAI_API_KEY")] := by
-  native_decide
-
-/-- No dangling ref of either family: without a key behind it, each ref stays
-absent on every selection shape. -/
-theorem codexEnvRefs_never_dangling
-    (requiresAnthropic bareFirerouter requiresOpenai : Bool) :
-    ("x-anthropic-api-key", "ANTHROPIC_API_KEY") ∉
-      codexEnvRefs requiresAnthropic bareFirerouter requiresOpenai false true
-    ∧ ("x-openai-api-key", "OPENAI_API_KEY") ∉
-      codexEnvRefs requiresAnthropic bareFirerouter requiresOpenai true false := by
-  unfold codexEnvRefs
-  cases requiresAnthropic <;> cases bareFirerouter <;> cases requiresOpenai <;> native_decide
-
-/-- The Anthropic ref appears exactly when required AND backed by a key. -/
-theorem codexEnvRefs_anthropic_present (b ro ko : Bool) :
-    ("x-anthropic-api-key", "ANTHROPIC_API_KEY") ∈ codexEnvRefs true b ro true ko := by
-  unfold codexEnvRefs
-  cases b <;> cases ro <;> cases ko <;> native_decide
-
-theorem codexEnvRefs_anthropic_absent (b ro ka ko : Bool) :
-    ("x-anthropic-api-key", "ANTHROPIC_API_KEY") ∉ codexEnvRefs false b ro ka ko := by
-  unfold codexEnvRefs
-  cases b <;> cases ro <;> cases ka <;> cases ko <;> native_decide
-
 end FireConnect.CredentialResolution

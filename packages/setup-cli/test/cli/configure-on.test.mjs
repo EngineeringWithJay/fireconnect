@@ -88,7 +88,7 @@ describe("configure to harness on propagation", () => {
     assert.equal(onResult.code, 0);
 
     const config = await readFile(codexConfigPath(home), "utf8");
-    assert.match(config, /experimental_bearer_token = "fw_test_key_12345"/);
+    assert.match(config, /"x-fireworks-api-key" = "fw_test_key_12345"/);
     assert.doesNotMatch(config, /env_key = "FIREWORKS_API_KEY"/);
   });
 
@@ -118,11 +118,11 @@ describe("configure to harness on propagation", () => {
 
   it("on --anthropic-api-key persists the key to global config", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-on-persist-anthropic-"));
-    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(path.dirname(opencodeConfigPath(home)), { recursive: true });
 
     const onResult = await runFireconnect(
       [
-        "claude", "on", "--model", "firerouter",
+        "opencode", "on", "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "sk-ant-global-key-12345",
       ],
@@ -136,11 +136,11 @@ describe("configure to harness on propagation", () => {
 
   it("rejects invalid --anthropic-api-key without persisting to global config", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-on-invalid-anthropic-"));
-    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(path.dirname(opencodeConfigPath(home)), { recursive: true });
 
     const onResult = await runFireconnect(
       [
-        "claude", "on", "--model", "firerouter",
+        "opencode", "on", "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "fw_not_anthropic",
       ],
@@ -149,10 +149,8 @@ describe("configure to harness on propagation", () => {
     assert.notEqual(onResult.code, 0);
     assert.match(onResult.stderr, /sk-ant-/);
 
-    await assert.rejects(
-      readFile(globalConfigPath(home), "utf8"),
-      { code: "ENOENT" },
-    );
+    const globalConfig = JSON.parse(await readFile(globalConfigPath(home), "utf8").catch(() => "{}"));
+    assert.ok(!globalConfig.anthropicApiKey, JSON.stringify(globalConfig));
   });
 
   it("on without --api-key does not overwrite global config", async () => {

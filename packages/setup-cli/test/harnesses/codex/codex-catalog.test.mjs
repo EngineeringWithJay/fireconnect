@@ -115,16 +115,16 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
   });
 
-  for (const [modelName, defaultLevel, efforts, summaryFormat] of [
-    ["accounts/fireworks/models/glm-5p2", "high", ["low", "medium", "high", "max"], "experimental"],
-    ["accounts/fireworks/models/glm-5p3", "high", ["low", "medium", "high", "max"], "experimental"],
-    ["accounts/fireworks/models/glm-5p3-fast", "high", ["low", "medium", "high", "max"], "experimental"],
-    ["accounts/fireworks/models/glm-5p3-flash", "high", ["low", "medium", "high", "max"], "experimental"],
-    ["accounts/fireworks/models/minimax-m2p7", "high", ["low", "medium", "high"], "experimental"],
+  for (const [modelName, efforts, summaryFormat] of [
+    ["accounts/fireworks/models/glm-5p2", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3-fast", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3-flash", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/minimax-m2p7", ["low", "medium", "high"], "experimental"],
   ]) {
     it(`uses correct reasoning config for ${modelName.split("/").pop()}`, () => {
       const entry = buildCodexCatalogEntry(mockModel({ name: modelName }));
-      assert.equal(entry.default_reasoning_level, defaultLevel);
+      assert.equal(entry.default_reasoning_level, undefined);
       assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), efforts);
       assert.equal(entry.reasoning_summary_format, summaryFormat);
     });
@@ -215,7 +215,7 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
         "accounts/fireworks/routers/glm-5p2-fast",
       ]) {
         const entry = buildCodexCatalogEntry(mockModel({ name }));
-        assert.equal(entry.default_reasoning_level, "high", name);
+        assert.equal(entry.default_reasoning_level, undefined, name);
         assert.deepEqual(
           entry.supported_reasoning_levels.map((level) => level.effort),
           ["low", "medium", "high", "max"],
@@ -243,9 +243,25 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     }
   });
 
+  it("sets no default effort on firerouter* and auto* rows (harness default applies)", () => {
+    for (const entry of [
+      buildCodexFirerouterCatalogEntry(),
+      buildCodexFirerouterCatalogEntry("firerouter/x"),
+      buildCodexFirerouterCatalogEntry("firerouter/x/y"),
+      buildCodexAutoCatalogEntry("auto"),
+      buildCodexAutoCatalogEntry("auto-instant"),
+    ]) {
+      assert.equal(entry.default_reasoning_level, undefined, entry.slug);
+      assert.ok(
+        entry.supported_reasoning_levels.some((level) => level.effort === "medium"),
+        `${entry.slug} ladder must still offer medium`,
+      );
+    }
+  });
+
   it("uses default reasoning config for an unknown model", () => {
     const entry = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/unknown-model" }));
-    assert.equal(entry.default_reasoning_level, "high");
+    assert.equal(entry.default_reasoning_level, undefined);
     assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high"]);
     assert.equal(entry.reasoning_summary_format, "experimental");
   });
@@ -254,16 +270,16 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     // Live catalog returns versioned slugs (e.g. deepseek-v4-flash-0731); the
     // reasoning table is keyed by the unversioned base (deepseek-v4-flash).
     const flash = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-flash-0731" }));
-    assert.equal(flash.default_reasoning_level, "high");
+    assert.equal(flash.default_reasoning_level, undefined);
     assert.deepEqual(flash.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
     const pro = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-pro-0813" }));
-    assert.equal(pro.default_reasoning_level, "high");
+    assert.equal(pro.default_reasoning_level, undefined);
     assert.deepEqual(pro.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
   });
 
   it("uses the kimi-k3 reasoning config for the current Kimi generation", () => {
     const entry = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/kimi-k3" }));
-    assert.equal(entry.default_reasoning_level, "high");
+    assert.equal(entry.default_reasoning_level, undefined);
     assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high"]);
   });
 
@@ -272,8 +288,6 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     // than one tier — a single-tier model looks frozen at its default.
     for (const [name, config] of Object.entries(MODEL_REASONING)) {
       assert.ok(config.levels.length > 1, `${name} must expose more than one effort tier`);
-      const efforts = config.levels.map((level) => level.effort);
-      assert.ok(efforts.includes(config.default), `${name} default ${config.default} must be in its ladder`);
     }
   });
 });
@@ -322,7 +336,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(entry.supports_parallel_tool_calls, true);
     assert.equal(
       entry.description,
-      "Routes each user turn between Claude and open models.",
+      "Routes each user turn across the models in this route.",
     );
     assert.equal(codexCatalogContainsModel({ models }, "firerouter/x"), true);
     assert.equal(
@@ -944,5 +958,21 @@ describe("codex-catalog refreshCodexCatalogRows", () => {
     const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
     const merged = refreshCodexCatalogRows(JSON.parse(JSON.stringify(fresh)), snapshot, fresh);
     assert.deepEqual(merged, fresh);
+  });
+
+  it("keeps a carried unserved row verbatim, including a written default", () => {
+    // A `--model firerouter/<path>` pick is not in the fresh catalog, so it
+    // is carried over as-is: an already-written default may be the user's own
+    // override, which fireconnect cannot distinguish from its own write.
+    const snapshot = buildServerlessCatalogSnapshot(rows());
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
+    const carried = {
+      ...buildCodexFirerouterCatalogEntry("firerouter/x"),
+      default_reasoning_level: "medium",
+    };
+    const merged = refreshCodexCatalogRows([...fresh, carried], snapshot, fresh);
+    const row = merged.find((entry) => entry.slug === "firerouter/x");
+    assert.deepEqual(row, carried);
+    assert.equal(merged.at(-1).slug, "firerouter/x", "position preserved");
   });
 });

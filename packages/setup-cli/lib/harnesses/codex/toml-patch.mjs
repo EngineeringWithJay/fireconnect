@@ -18,12 +18,33 @@ const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
 const ROOT_WEB_SEARCH_DISABLED_LINE = /^web_search\s*=\s*["']disabled["']\s*(#.*)?$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
+const CODEX_HTTP_HEADERS_LINE = /^http_headers\s*=.+$/;
 
 function tomlString(value) {
   return `"${String(value).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-function providerAuthLines({ literal, apiKey, envKey = "FIREWORKS_API_KEY" }) {
+function inlineTableLine(key, entries) {
+  return `${key} = { ${Object.entries(entries)
+    .map(([header, value]) => `${tomlString(header)} = ${tomlString(value)}`)
+    .join(", ")} }`;
+}
+
+function httpHeadersLine(httpHeaders) {
+  return inlineTableLine("http_headers", httpHeaders);
+}
+
+/**
+ * With `chatgptLogin`, Codex authenticates with its own ChatGPT sign-in
+ * (`requires_openai_auth = true` sends that login as Authorization, and Codex
+ * ignores env_key), so the Fireworks key rides in `http_headers` instead — see
+ * CODEX_CHATGPT_FIREWORKS_KEY_HEADER. No bearer token is written: Codex prefers
+ * one over the ChatGPT login.
+ */
+function providerAuthLines({ literal, apiKey, envKey = "FIREWORKS_API_KEY", chatgptLogin = false }) {
+  if (chatgptLogin) {
+    return ["requires_openai_auth = true"];
+  }
   if (literal && apiKey) {
     return [
       `experimental_bearer_token = "${apiKey}"`,
@@ -172,6 +193,7 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
  *   authEnvKey?: string,
  *   httpHeaders?: Record<string, string>,
  *   envHttpHeaders?: Record<string, string>,
+ *   chatgptLogin?: boolean,
  * }} routing
  */
 export function patchFireconnectRoutingRaw(raw, {
@@ -186,6 +208,7 @@ export function patchFireconnectRoutingRaw(raw, {
   authEnvKey = "FIREWORKS_API_KEY",
   httpHeaders = {},
   envHttpHeaders = {},
+  chatgptLogin = false,
 }) {
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   const routingBlock = [
@@ -198,16 +221,10 @@ export function patchFireconnectRoutingRaw(raw, {
     `name = "${providerName}"`,
     `base_url = "${baseUrl}"`,
     `wire_api = "${wireApi}"`,
-    ...providerAuthLines({ literal: literalAuth, apiKey, envKey: authEnvKey }),
-    ...(Object.keys(httpHeaders).length
-      ? [`http_headers = { ${Object.entries(httpHeaders)
-        .map(([header, value]) => `${tomlString(header)} = ${tomlString(value)}`)
-        .join(", ")} }`]
-      : []),
+    ...providerAuthLines({ literal: literalAuth, apiKey, envKey: authEnvKey, chatgptLogin }),
+    ...(Object.keys(httpHeaders).length ? [httpHeadersLine(httpHeaders)] : []),
     ...(Object.keys(envHttpHeaders).length
-      ? [`env_http_headers = { ${Object.entries(envHttpHeaders)
-        .map(([header, env]) => `${tomlString(header)} = ${tomlString(env)}`)
-        .join(", ")} }`]
+      ? [inlineTableLine("env_http_headers", envHttpHeaders)]
       : []),
   ].join("\n");
 
@@ -261,14 +278,30 @@ export function patchCodexModelRaw(raw, modelId) {
 }
 
 /**
+ * Rewrite the gateway provider's auth. With `chatgptLogin`, the key lives in
+ * `http_headers`, so that line is rewritten from `httpHeaders` as well.
  * @param {string} raw
- * @param {{ apiKey: string, literalAuth: boolean }} auth
+ * @param {{
+ *   apiKey: string,
+ *   literalAuth: boolean,
+ *   chatgptLogin?: boolean,
+ *   httpHeaders?: Record<string, string>,
+ * }} auth
  */
-export function patchCodexProviderAuthRaw(raw, { apiKey, literalAuth }) {
+export function patchCodexProviderAuthRaw(raw, {
+  apiKey,
+  literalAuth,
+  chatgptLogin = false,
+  httpHeaders = {},
+}) {
   const lines = raw.split("\n");
   const out = [];
   let inProviderTable = false;
   let authPatched = false;
+  const authLines = () => [
+    ...providerAuthLines({ literal: literalAuth, apiKey, chatgptLogin }),
+    ...(chatgptLogin && Object.keys(httpHeaders).length ? [httpHeadersLine(httpHeaders)] : []),
+  ];
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -280,9 +313,7 @@ export function patchCodexProviderAuthRaw(raw, { apiKey, literalAuth }) {
     if (inProviderTable) {
       if (isAnyTableHeader(trimmed)) {
         if (!authPatched) {
-          for (const authLine of providerAuthLines({ literal: literalAuth, apiKey })) {
-            out.push(authLine);
-          }
+          out.push(...authLines());
           authPatched = true;
         }
         inProviderTable = false;
@@ -291,7 +322,8 @@ export function patchCodexProviderAuthRaw(raw, { apiKey, literalAuth }) {
       }
       if (CODEX_BEARER_AUTH_LINE.test(trimmed)
         || CODEX_ENV_AUTH_LINE.test(trimmed)
-        || /^requires_openai_auth\s*=/.test(trimmed)) {
+        || /^requires_openai_auth\s*=/.test(trimmed)
+        || (chatgptLogin && CODEX_HTTP_HEADERS_LINE.test(trimmed))) {
         continue;
       }
     }
@@ -299,9 +331,7 @@ export function patchCodexProviderAuthRaw(raw, { apiKey, literalAuth }) {
   }
 
   if (inProviderTable && !authPatched) {
-    for (const authLine of providerAuthLines({ literal: literalAuth, apiKey })) {
-      out.push(authLine);
-    }
+    out.push(...authLines());
   }
 
   return ensureTrailingNewline(out.join("\n"));

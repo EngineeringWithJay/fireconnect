@@ -1,5 +1,7 @@
 /**
- * Disk-cached Anthropic/OpenAI list prices sourced from models.dev.
+ * Disk-cached Anthropic/OpenAI list prices sourced from models.dev. Each row
+ * also keeps the model's context window, image support, and family, which the
+ * Codex catalog reads for the OpenAI models its sign-in can use.
  *
  * `lib/demo/list-pricing.mjs` keeps a hardcoded rate table as the offline
  * fallback, but new models (e.g. Claude Opus 5.5, launched after that table was
@@ -19,10 +21,10 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { catalogTtlMs, scopedCacheFilePath } from "../fireworks/serverless-catalog-cache.mjs";
+import { fetchModelsDevApi } from "./models-dev.mjs";
 
 /** Where cached rows claim their rates came from. */
 export const MODELS_DEV_PRICING_SOURCE = "https://models.dev";
-const MODELS_DEV_API_URL = "https://models.dev/api.json";
 
 // Freshness shares the serverless catalog TTL (1h, overridable for tests via
 // FIRECONNECT_CATALOG_TTL_MS): one knob for every catalog read, so list prices
@@ -89,6 +91,17 @@ function toCachedRow(model, { provider }) {
     ...base,
     source: MODELS_DEV_PRICING_SOURCE,
   };
+  const contextWindow = Number(model?.limit?.context);
+  if (Number.isFinite(contextWindow) && contextWindow > 0) {
+    row.contextWindow = contextWindow;
+  }
+  const inputs = model?.modalities?.input;
+  if (Array.isArray(inputs)) {
+    row.imageInput = inputs.includes("image");
+  }
+  if (typeof model?.family === "string" && model.family) {
+    row.family = model.family;
+  }
   if (fast) {
     row.fast = fast;
   }
@@ -263,21 +276,10 @@ export async function refreshListPriceCache({ force = false } = {}) {
   if (!force && isListPriceCacheFresh()) {
     return true;
   }
-  try {
-    const response = await fetch(MODELS_DEV_API_URL, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) {
-      return getListPriceRates() !== null;
-    }
-    const parsed = parseModelsDevListPrices(await response.text());
-    if (!parsed) {
-      return getListPriceRates() !== null;
-    }
-    setListPriceCacheRates(parsed, { persist: true });
-    return true;
-  } catch {
+  const parsed = parseModelsDevListPrices(await fetchModelsDevApi());
+  if (!parsed) {
     return getListPriceRates() !== null;
   }
+  setListPriceCacheRates(parsed, { persist: true });
+  return true;
 }

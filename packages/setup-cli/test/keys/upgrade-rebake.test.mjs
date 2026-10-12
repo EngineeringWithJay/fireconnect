@@ -74,6 +74,33 @@ describe("reconcileHarnessConfigOnUpgrade", () => {
     });
   });
 
+  it("drops the legacy Codex provider-key shell exports", async () => {
+    await withTempHome("upgrade-codex-exports-", async (home) => {
+      process.env.SHELL = "/bin/zsh";
+      await seedKeychainConfig(home, KEY);
+      await writeGlobalConfig(home, {
+        openaiApiKey: "sk-example-0000",
+        harnesses: { codex: { enabled: true, provider: "fireworks" } },
+      });
+      await writeFile(
+        path.join(home, ".zshrc"),
+        [
+          "# keep me",
+          "# >>> fireconnect >>>",
+          'export ANTHROPIC_API_KEY="$(fireconnect key export --stored-only --anthropic 2>/dev/null)"',
+          'export OPENAI_API_KEY="$(fireconnect key export --stored-only --openai 2>/dev/null)"',
+          "# <<< fireconnect <<<",
+          "",
+        ].join("\n"),
+      );
+
+      await reconcileHarnessConfigOnUpgrade(home);
+      const zshrc = await readFile(path.join(home, ".zshrc"), "utf8");
+      assert.doesNotMatch(zshrc, /ANTHROPIC_API_KEY|OPENAI_API_KEY/);
+      assert.match(zshrc, /# keep me/);
+    });
+  });
+
   it("no-ops when no stored key is available", async () => {
     await withTempHome("upgrade-rebake-empty-", async (home) => {
       await writeGlobalConfig(home, {

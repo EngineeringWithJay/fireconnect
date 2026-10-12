@@ -15,7 +15,6 @@ import {
   resolveOpenaiKey,
 } from "../../lib/firerouter/core.mjs";
 import {
-  firerouterByokEnvRefHeaders,
   resolveFirerouterByokHeaders,
   resolveFirerouterPlan,
   supportsOpenaiApiKeyFlag,
@@ -202,44 +201,6 @@ describe("firerouter byok header wiring", () => {
     }
   });
 
-  it("attaches each Codex env ref only when a key is behind it", () => {
-    const gptPlan = resolveFirerouterPlan({ main: "firerouter/gpt-5p6" });
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(gptPlan, { openaiKey: "sk-proj-123" }),
-      { [OPENAI_BYOK_HEADER]: "OPENAI_API_KEY" },
-    );
-    // No key, no ref: a dangling ref would send an empty header upstream.
-    assert.deepEqual(firerouterByokEnvRefHeaders(gptPlan, {}), {});
-    // The Anthropic ref follows the same rule: requiresAnthropicKey alone is
-    // not enough, a resolved key must back the env name.
-    const opusPlan = resolveFirerouterPlan({ main: "firerouter/opus" });
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(opusPlan, { anthropicKey: "sk-ant-123" }),
-      { [ANTHROPIC_BYOK_HEADER]: "ANTHROPIC_API_KEY" },
-    );
-    assert.deepEqual(firerouterByokEnvRefHeaders(opusPlan, {}), {});
-    // Bare firerouter forwards each configured key opportunistically.
-    const barePlan = resolveFirerouterPlan({ main: "firerouter" });
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(barePlan, {
-        anthropicKey: "sk-ant-123",
-        openaiKey: "sk-proj-123",
-      }),
-      {
-        [ANTHROPIC_BYOK_HEADER]: "ANTHROPIC_API_KEY",
-        [OPENAI_BYOK_HEADER]: "OPENAI_API_KEY",
-      },
-    );
-    assert.deepEqual(
-      firerouterByokEnvRefHeaders(barePlan, { anthropicKey: "sk-ant-123" }),
-      { [ANTHROPIC_BYOK_HEADER]: "ANTHROPIC_API_KEY" },
-    );
-    assert.deepEqual(firerouterByokEnvRefHeaders(barePlan, {}), {});
-    // Pinned non-GPT compounds stay clean even with a key configured.
-    const kimiPlan = resolveFirerouterPlan({ main: "firerouter/kimi-k3" });
-    assert.deepEqual(firerouterByokEnvRefHeaders(kimiPlan, { openaiKey: "sk-proj-123" }), {});
-  });
-
   it("leaves pinned non-GPT compounds clean even with an OpenAI key configured", async () => {
     const restore = clearProviderKeys();
     try {
@@ -260,8 +221,7 @@ describe("firerouter byok header wiring", () => {
 
   it("supportsOpenaiApiKeyFlag mirrors harness forwarding ability", () => {
     assert.equal(supportsOpenaiApiKeyFlag({ byok: "value" }), true);
-    assert.equal(supportsOpenaiApiKeyFlag({ byok: "envref" }), true);
-    assert.equal(supportsOpenaiApiKeyFlag({ byok: "none", nativeAnthropicKey: true }), true);
+    assert.equal(supportsOpenaiApiKeyFlag({ byok: "none", customHeaderOpenaiKey: true }), true);
     assert.equal(supportsOpenaiApiKeyFlag({ byok: "none" }), false);
     assert.equal(supportsOpenaiApiKeyFlag(null), false);
   });

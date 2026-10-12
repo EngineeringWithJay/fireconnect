@@ -145,7 +145,7 @@ describe("fireconnect help quick", () => {
 describe("harness help matches supported command features", () => {
   test("documents shared Azure options only on Azure-capable harnesses", async () => {
     await withTempHome("help-azure", async (home) => {
-      for (const harness of ["opencode", "codex", "pi", "cursor", "vscode"]) {
+      for (const harness of ["opencode", "pi", "cursor", "vscode"]) {
         const result = await runCli(["help", harness], { home });
         assert.equal(result.code, 0, result.stderr);
         assert.match(result.stdout, /--azure/);
@@ -154,6 +154,8 @@ describe("harness help matches supported command features", () => {
       const deepseek = await runCli(["help", "deepseek"], { home });
       assert.equal(deepseek.code, 0, deepseek.stderr);
       assert.doesNotMatch(deepseek.stdout, /--azure/);
+      const codex = await runCli(["help", "codex"], { home });
+      assert.doesNotMatch(codex.stdout, /--azure/);
       const claude = await runCli(["help", "claude"], { home });
       assert.doesNotMatch(claude.stdout, /--azure/);
       assert.match(claude.stdout, /Anthropic-compatible gateway URL override/);
@@ -162,11 +164,13 @@ describe("harness help matches supported command features", () => {
 
   test("does not advertise ignored gateway base-url overrides", async () => {
     await withTempHome("help-baseurl", async (home) => {
-      for (const harness of ["codex", "pi"]) {
+      for (const harness of ["pi"]) {
         const result = await runCli(["help", harness], { home });
         assert.doesNotMatch(result.stdout, /Fireworks gateway URL override/);
         assert.match(result.stdout, /--base-url.*Microsoft Foundry endpoint/);
       }
+      const codex = await runCli(["help", "codex"], { home });
+      assert.doesNotMatch(codex.stdout, /--base-url/);
     });
   });
 
@@ -200,14 +204,18 @@ describe("harness help matches supported command features", () => {
     assert.match(claude.stdout, /Override HOME/);
     assert.match(claude.stdout, /max-intelligence, more-intelligence, balanced/);
     assert.match(claude.stdout, /--model firerouter/);
+    assert.doesNotMatch(claude.stdout, /--anthropic-api-key/);
 
     const codex = await runCli(["codex", "help"]);
     assert.equal(codex.code, 0, codex.stderr);
     assert.match(codex.stdout, /Options for on/);
-    assert.match(codex.stdout, /use firerouter for FireRouter/);
-    assert.match(codex.stdout, /ANTHROPIC_API_KEY/);
-    assert.match(codex.stdout, /configure --anthropic-api-key|--anthropic-api-key <key>/);
-    assert.match(codex.stdout, /Pass --anthropic-api-key \/ --openai-api-key with codex on/);
+    assert.match(codex.stdout, /default: firerouter/);
+    assert.doesNotMatch(codex.stdout, /--anthropic-api-key/);
+    assert.doesNotMatch(codex.stdout, /ANTHROPIC_API_KEY/);
+    assert.doesNotMatch(codex.stdout, /--openai-api-key/);
+    assert.match(codex.stdout, /GPT turns are paid by Codex's own sign-in/);
+    assert.match(codex.stdout, /else by an OpenAI Provider Key on your Fireworks account/);
+    assert.doesNotMatch(codex.stdout, /chatgpt-login/);
 
     const pi = await runCli(["pi", "help"]);
     assert.equal(pi.code, 0, pi.stderr);

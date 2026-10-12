@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -411,6 +411,58 @@ describe("opencode catalog model handling", () => {
     } finally {
       clearModelsDevFireworksRegistry();
       setServerlessCatalogSnapshot(null);
+    }
+  });
+});
+
+describe("opencode skips overrides for models OpenCode already lists", () => {
+  const GLM_LATEST = "accounts/fireworks/routers/glm-latest";
+  const KIMI_LATEST = "accounts/fireworks/routers/kimi-latest";
+
+  it("treats any models.dev-listed id as covered, including router aliases", () => {
+    setModelsDevFireworksRegistry([GLM_LATEST]);
+    try {
+      assert.equal(opencodeNeedsProviderModelOverride("glm-latest"), false);
+      assert.equal(opencodeNeedsProviderModelOverride(GLM_LATEST), false);
+      assert.equal(opencodeNeedsProviderModelOverride("kimi-latest"), true);
+      assert.equal(opencodeNeedsProviderModelOverride("auto"), true);
+      assert.equal(opencodeNeedsProviderModelOverride("firerouter"), true);
+    } finally {
+      clearModelsDevFireworksRegistry();
+    }
+  });
+
+  it("keeps overriding router aliases while the registry is unavailable", () => {
+    clearModelsDevFireworksRegistry();
+    assert.equal(opencodeNeedsProviderModelOverride("glm-latest"), true);
+  });
+
+  it("on selects the models.dev row and drops a stale duplicate override", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-dedupe-"));
+    const configPath = path.join(home, "opencode.json");
+    const enable = (extra) => enableOpencodeFireworks({
+      configPath,
+      dataDir: path.join(home, "data"),
+      apiKey: "fw_test_key_12345",
+      effectiveApiKey: "fw_test_key_12345",
+      catalogModelIds: [GLM_LATEST, KIMI_LATEST],
+      ...extra,
+    });
+    try {
+      await enable({ modelId: "glm-latest" });
+      let config = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(config.model, "fireworks-ai/glm-latest");
+      assert.ok(config.provider["fireworks-ai"].models["glm-latest"]);
+
+      setModelsDevFireworksRegistry([GLM_LATEST]);
+      const result = await enable({});
+      config = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(config.model, `fireworks-ai/${GLM_LATEST}`);
+      assert.deepEqual(Object.keys(config.provider["fireworks-ai"].models).sort(), ["kimi-latest"]);
+      assert.equal(result.modelsAdded.includes("glm-latest"), false);
+    } finally {
+      clearModelsDevFireworksRegistry();
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

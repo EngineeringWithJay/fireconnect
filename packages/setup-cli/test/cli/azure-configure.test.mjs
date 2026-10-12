@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 
 import { globalConfigPath } from "../../lib/config/global-config.mjs";
 import { OPENCODE_AZURE_PROVIDER_ID, opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
-import { codexConfigPath } from "../../lib/harnesses/codex/core.mjs";
 import { PI_AZURE_PROVIDER, piModelsPath, piSettingsPath } from "../../lib/harnesses/pi/core.mjs";
 import { codexOnOffArgs, seedOnCommandCatalog } from "../helpers.mjs";
 
@@ -122,16 +121,12 @@ describe("harness on leverages the configured azure provider (no flags)", () => 
     });
   });
 
-  it("codex on routes through the configured Foundry endpoint", async () => {
+  it("codex on rejects the configured Foundry endpoint", async () => {
     await withHome(async (home) => {
       assert.equal((await configureAzure(home, ["--api-key", AZURE_KEY])).code, 0);
       const on = await runFireconnect(["codex", "on"], { HOME: home });
-      assert.equal(on.code, 0, on.stderr);
-
-      const toml = await readFile(codexConfigPath(home), "utf8");
-      assert.match(toml, /model_provider = "fireworks-azure"/);
-      assert.match(toml, new RegExp(`base_url = "${AZURE_BASE_URL.replace(/[.]/g, "\\.")}"`));
-      assert.match(toml, /experimental_bearer_token = "azure-test-key-1234567890"/);
+      assert.notEqual(on.code, 0);
+      assert.match(on.stderr, /Codex no longer supports Azure\/Foundry/);
     });
   });
 

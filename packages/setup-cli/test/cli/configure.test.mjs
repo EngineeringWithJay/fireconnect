@@ -69,4 +69,44 @@ describe("configure (provider / FireRouter setup)", () => {
       /Unknown argument: --api-key-mode/,
     );
   });
+
+  it("refuses to set and unset the same provider key in one run", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-set-unset-"));
+    const result = await runFireconnect(
+      ["configure", "--openai-api-key", "sk-proj-configure-12345", "--unset", "openai-api-key"],
+      { HOME: home, OPENAI_API_KEY: "" },
+    );
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /--openai-api-key and --unset openai-api-key cannot be used together/);
+  });
+
+  it("unsets one provider key and keeps the other", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-unset-one-"));
+    const env = { HOME: home, OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" };
+    await runFireconnect(["configure", "--openai-api-key", "sk-proj-configure-12345"], env);
+    await runFireconnect(["configure", "--anthropic-api-key", "sk-ant-configure-12345"], env);
+
+    const result = await runFireconnect(["configure", "--unset", "openai-api-key"], env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Removed the saved OpenAI key\./);
+    assert.doesNotMatch(result.stdout, /Saved to/);
+
+    const config = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
+    assert.equal(config.openaiApiKey ?? "", "");
+    assert.equal(config.anthropicApiKey, "sk-ant-configure-12345");
+  });
+
+  it("rejects an unknown --unset key", () => {
+    assert.throws(
+      () => parseCli(["configure", "--unset", "fireworks-api-key"]),
+      /--unset takes anthropic-api-key or openai-api-key, not fireworks-api-key/,
+    );
+  });
+
+  it("rejects --unset on a harness command", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-harness-unset-flag-"));
+    const result = await runFireconnect(["opencode", "on", "--unset", "openai-api-key"], { HOME: home });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /fireconnect configure --unset openai-api-key/);
+  });
 });

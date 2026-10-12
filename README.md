@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fw-ai/fireconnect/blob/main/LICENSE)
 
-> Use [Fireworks AI](https://fireworks.ai) models inside the coding harnesses you already use: Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, GitHub Copilot (app and CLI), and DeepSeek Harness.
+> Use [Fireworks AI](https://fireworks.ai) models inside the coding harnesses you already use: Claude Code, Claude Desktop, OpenCode, Codex, Pi, Cursor, VS Code, GitHub Copilot (app and CLI), and DeepSeek Harness.
 
 One command points a harness at Fireworks. `on` edits that harness's own settings, `off` puts your original file back **exactly as it was**: nothing to host, nothing to launch.
 
@@ -10,7 +10,7 @@ One command points a harness at Fireworks. `on` edits that harness's own setting
 [Default models](#default-models) · [Claude Code](#claude-code) · [Codex](#codex) ·
 [OpenCode](#opencode) · [Pi](#pi) · [Cursor](#cursor) · [VS Code Chat](#vs-code-chat) ·
 [GitHub Copilot app](#github-copilot-app) · [GitHub Copilot CLI](#github-copilot-cli) · [DeepSeek Harness](#deepseek-harness) ·
-[FireRouter](#firerouter) · [Models](#models) ·
+[Claude Desktop](#claude-desktop) · [FireRouter](#firerouter) · [Models](#models) ·
 [Azure / Foundry](#azure-microsoft-foundry-endpoints) · [CLI reference](#cli-reference) ·
 [Keys and storage](#keys-and-storage) · [Troubleshooting](#troubleshooting) ·
 [Upgrade and uninstall](#upgrade-and-uninstall)
@@ -80,6 +80,7 @@ Run `fireconnect help` or `fireconnect <harness> help` to see every option.
 
 - You need **bash** and **Node.js 18+**. If Node is missing or too old, the installer sets it up via Homebrew on macOS, or points you to nvm / nodejs.org / NodeSource elsewhere.
 - The installer puts the CLI in `~/.fireconnect/cli`, adds a launcher to `~/.local/bin`, and adds it to your shell `PATH`.
+  If Node comes from [fnm](https://github.com/Schniz/fnm), the launcher uses fnm's `default` Node, so it keeps working in new and non-interactive shells.
 - It also runs the same cleanup as `fireconnect upgrade`: re-checks key storage, re-saves keys for harnesses you've already connected, and removes the retired Claude WebSearch MCP.
 - It doesn't sign you in or change any harness settings. That's steps 2 and 3.
 
@@ -116,7 +117,8 @@ File-based harnesses restore from a snapshot kept under `~/.fireconnect/`, and t
 |----------------|---------|
 | Claude tiers (`opus` / `sonnet` / `haiku` / `fable` / subagents) | Claude's own defaults unless pinned with `--opus` / `--sonnet` / `--haiku` / `--fable` / `--subagent` |
 | Claude `/model` picker | Serverless catalog appended (`auto`, routers, `firerouter` when eligible) |
-| OpenCode, Codex, Pi, Cursor, VS Code, Copilot, DeepSeek Harness | `auto` |
+| Codex | `firerouter`, with Codex signed in to ChatGPT ([details](#signing-in-with-chatgpt)) |
+| OpenCode, Pi, Cursor, VS Code, Copilot, DeepSeek Harness | `auto` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
 
 Fire Pass keys are detected on their own. No flags needed. Your saved Claude picks are kept separately
@@ -314,11 +316,52 @@ Sends [OpenAI Codex CLI](https://developers.openai.com/codex) through Fireworks 
 Responses API.
 
 ```bash
-fireconnect codex                       # writes ~/.codex/config.toml
+fireconnect codex                       # writes ~/.codex/config.toml (firerouter, ChatGPT sign-in)
 fireconnect codex status
 fireconnect codex --model glm-latest      # switch model
 fireconnect codex off
 ```
+
+### Signing in with ChatGPT
+
+Codex keeps its own sign-in. The first `fireconnect codex` selects FireRouter (`firerouter`),
+which routes each turn between GPT Astra, GPT Sol, and open models, and sets `requires_openai_auth = true`,
+so Codex asks you to sign in (`codex login`) and sends that sign-in with each request. Your
+Fireworks key goes in its own `x-fireworks-api-key` header. FireRouter sends easy turns to
+Fireworks models. For GPT turns it pays with the first of these it finds:
+
+1. **Codex's sign-in.** Your ChatGPT plan, or the OpenAI key you signed Codex in with
+   (`codex login --with-api-key`). FireConnect sends no OpenAI key of its own, saved or exported.
+2. **An OpenAI Provider Key on your Fireworks account**
+   ([Provider Keys](https://docs.fireworks.ai/nexus/provider-keys)).
+
+With neither (for example, Codex signed in with only your Fireworks key and no Provider
+Key), the FireRouter row uses open models only and the GPT models fail.
+
+On a machine without a browser, `codex login --device-auth` signs in with ChatGPT. Or sign in
+with the OpenAI key you saved with `fireconnect configure`, which then pays for GPT turns:
+
+```bash
+fireconnect key export --openai | codex login --with-api-key
+```
+
+Connected Codex with an earlier FireConnect? `fireconnect upgrade` re-runs `fireconnect codex` for
+you, keeping your model: it turns on the sign-in, moves your Fireworks key into the
+`x-fireworks-api-key` header, and removes the OpenAI and Anthropic key headers earlier releases
+wrote. Run `codex login` if Codex asks you to sign in, then restart Codex.
+
+While Codex signs in, its `/model` picker lists one FireRouter row at the top, and
+`--model firerouter` selects it. Then come the GPT models stock Codex lists for your sign-in,
+every turn on that model and paid as above, then the Fireworks catalog. `fireconnect codex` and
+`fireconnect upgrade` read them with `codex debug models` and use Codex's own entries (name,
+reasoning levels and defaults, context window, instructions), so new GPT models appear as soon as
+Codex offers them and behave as they do in stock Codex. If Codex can't be asked, the newest GPT
+Astra, Sol, and Luna models on [models.dev](https://models.dev) are listed instead. A FireRouter
+route you pick with `--model` (for example `firerouter/sol`) is listed too.
+
+A re-run keeps the model you're on. The sign-in stays whichever model you pick: on an open model
+(`--model glm-latest`) the Fireworks key in its own header pays for the turn, and the GPT rows stay
+in the picker.
 
 - Sets root `model_provider` / `model` for Codex 0.134+ (short name) and adds a
   `[model_providers.fireworks-ai]` block with `wire_api = "responses"` and your key saved
@@ -342,10 +385,10 @@ to load them. Use `--config-path <path>` for a config somewhere else.
 >
 > ```bash
 > codex resume <id> -c model_provider="fireworks-ai"        # Fireworks gateway
-> codex resume <id> -c model_provider="fireworks-azure"     # Azure/Foundry
 > ```
 >
 > `fireconnect codex off` removes the provider table, so resume only works while that route is on.
+> ChatGPT app threads started on Fireworks won't open until you run `fireconnect codex on` again.
 
 `fireconnect chatgpt` is the same thing under another name. `codex` and `chatgpt` share
 `~/.codex`, so one command routes both the Codex CLI and the ChatGPT desktop app. Like the
@@ -366,7 +409,10 @@ fireconnect opencode off
   `model` to `fireworks-ai/<name>`, and lists provider models by short name. Your key is saved
   right in the file (readable only by you).
 - Lists the preferred serverless catalog in the provider's `models` for OpenCode's `/model`
-  picker. If the catalog can't be fetched (offline), it falls back to the active model.
+  picker, skipping models OpenCode already lists from models.dev so none appear twice. If the
+  catalog can't be fetched (offline), it falls back to the active model.
+- OpenCode v2: if your `opencode.json` already has a `providers` map, FireConnect also writes
+  `providers.fireworks-ai` in the v2 format, replacing any entry you had there. `off` restores it.
 
 Use `--config-path <path>` for a config somewhere else.
 
@@ -554,9 +600,10 @@ command and one app restart, and `off` puts everything back exactly as it
 was.
 
 ```bash
-fireconnect claude-desktop on          # switch Desktop to Fireworks
-fireconnect claude-desktop mcp sync    # re-import your connectors (first time)
-fireconnect claude-desktop off         # restore your previous setup
+fireconnect claude-desktop on                # switch Desktop to Fireworks; imports your connectors
+fireconnect claude-desktop on --model <id>   # add a serverless model to the picker
+fireconnect claude-desktop mcp sync          # re-detect connectors you've added since
+fireconnect claude-desktop off               # restore your previous setup
 ```
 
 Quit and reopen Claude Desktop after `on` / `off`. Requires macOS and a
@@ -568,20 +615,32 @@ stored Fireworks credential (`fireconnect login`).
 mechanism) pointing at a loopback gateway shim — a small launchd service that
 maps model names, translates auth headers, and mirrors the signed model
 catalog. The shim auto-starts at login and after crashes; if it is ever down,
-`fireconnect claude-desktop status` says so and `on` brings it back.
+`fireconnect claude-desktop status` says so and `on` brings it back. The shim
+trusts your system's certificate store (on Node 22.15 or newer) and
+`NODE_EXTRA_CA_CERTS` from the shell that ran `on`, so it works behind
+TLS-inspecting corporate proxies such as Zscaler.
+
+The Code tab loads connector tools on demand instead of sending every tool
+schema with every request, so a fresh session answers in seconds even with
+hundreds of connector tools.
 
 ### Connectors
 
 Desktop's third-party mode does not expose the in-app connector browser (the
 Connectors pane and its one-click add flow are suppressed) — connectors are
-managed through fireconnect instead. After every `on`, run `mcp sync` once:
+managed through fireconnect instead:
 
-- **`mcp sync`** imports the connectors you already use — from Desktop session
+- **`on`** imports the connectors you already use: from Desktop session
   history, your previous Desktop config, and your claude.ai org registry
   (when the Claude Code CLI is installed and signed in). Each imported
   connector needs a one-time re-auth sign-in the first time you use it.
+- **`mcp sync`** runs the same import again, for connectors you've added since.
 - **`mcp add <name> <url>` / `mcp remove <name>`** manage entries by hand;
   removals stick across syncs.
+
+Your connector setup, including `mcp add` / `remove` results, survives `off` and
+`on`: `off` saves it to `~/.fireconnect/claude-desktop/connectors.json` and the
+next `on` restores it.
 
 Most connectors (Linear, Slack, Notion, GitHub-based tools, ...) work with
 just that. Two categories need extra setup because they cannot self-register
@@ -631,6 +690,7 @@ These are Claude Desktop's third-party-mode rules, not FireConnect bugs:
 | Models missing from the picker | Run `on` once with network up (warms the catalog cache), then restart Desktop |
 | A connector shows a sign-in error that won't clear | `mcp remove` it, then re-`add` with your OAuth client (Google), or use a companion local server (Figma) |
 | Code tab says the API key was rejected | `on` again — the profile carries a fresh key from your stored credential |
+| Requests fail behind a corporate proxy (`502 Could not reach Fireworks`) | Upgrade, then `on` again so the shim trusts your system certificates |
 
 `off` restores the provider profile you had before, the device config keys
 FireConnect touched, and removes only FireConnect-owned artifacts (the shim
@@ -665,7 +725,11 @@ fireconnect <harness> --model firerouter       # any harness
 `ANTHROPIC_API_KEY`, or save it once with `fireconnect configure --anthropic-api-key sk-ant-...`)
 on a harness that can forward it. FireConnect attaches the key as `x-anthropic-api-key` on
 FireRouter selections (`firerouter`, `firerouter/opus`) when one is configured, and connects
-without it otherwise. On Claude Code the flag is optional native auth: FireRouter works without it.
+without it otherwise. Claude Code refuses the flag: its own sign-in (`claude login`, or an
+`ANTHROPIC_API_KEY` you export) pays for Claude turns, and FireConnect writes no Anthropic key into
+its settings. Codex sends no Anthropic or OpenAI key: its own sign-in pays for GPT turns, and
+Claude in a Codex FireRouter route needs an Anthropic
+[Provider Key](https://docs.fireworks.ai/nexus/provider-keys) on your Fireworks account.
 
 **Using OpenAI's frontier models.** Pass `--openai-api-key sk-...` (or export `OPENAI_API_KEY`,
 or save it once with `fireconnect configure --openai-api-key sk-...`) on a harness that can
@@ -675,11 +739,11 @@ is configured, and connects without it otherwise. The key is never prompted for 
 
 | Harness | Local Anthropic key | Local OpenAI key | `--routing-preference` | Notes |
 |---------|----------------------|------------------|------------------------|-------|
-| Claude Code | Header value | Header value | Yes | Gateway header still wins for auth |
+| Claude Code | Not sent; Claude Code's own sign-in pays | Header value | Yes | Gateway header still wins for auth |
 | OpenCode | Header value | Header value | Yes | `--model firerouter` selects it; the full picker remains registered |
 | Pi | Header value | Header value | Yes | Same Fireworks provider as other Pi models |
 | VS Code | Header value | Header value | Yes | Same provider (`apiType: chat-completions`) |
-| Codex | `ANTHROPIC_API_KEY` env reference | `OPENAI_API_KEY` env reference | No | Export the keys |
+| Codex | Not sent; use an Anthropic [Provider Key](https://docs.fireworks.ai/nexus/provider-keys) | Not sent; Codex's own sign-in pays for GPT turns | No | Sign Codex in with an OpenAI key via `codex login --with-api-key` ([details](#signing-in-with-chatgpt)) |
 | Cursor | Not forwardable | Not forwardable | No | Connects without BYOK; FireRouter routes the Fireworks mix |
 | DeepSeek Harness | Not forwardable | Not forwardable | No | Connects without BYOK; FireRouter routes the Fireworks mix |
 
@@ -745,7 +809,7 @@ Foundry (Azure) uses deployment names instead (see [Azure](#azure-microsoft-foun
 Fireworks models are also first-party models inside
 [Microsoft Foundry](https://docs.fireworks.ai/ecosystem/integrations/azure-foundry), billed
 through Azure and counting toward your MACC. Foundry speaks an **OpenAI-compatible** API,
-so **OpenCode, Codex, Pi, Cursor, and VS Code** can point there instead of the Fireworks gateway.
+so **OpenCode, Pi, Cursor, and VS Code** can point there instead of the Fireworks gateway.
 
 Set it once, then `<harness> on` uses it. No per-command flags:
 
@@ -755,7 +819,6 @@ fireconnect configure --provider azure \
   --api-key <azure-api-key>
 
 fireconnect opencode      # goes through your Foundry endpoint
-fireconnect codex
 ```
 
 `configure` saves a top-level `provider` and `azure` endpoint in `~/.fireconnect/config.json`.
@@ -781,7 +844,6 @@ fireconnect opencode --azure --base-url https://<resource>.services.ai.azure.com
 | Harness | Writes | Provider |
 |---------|--------|----------|
 | OpenCode | `provider.fireworks-azure` in `opencode.json` (`@ai-sdk/openai-compatible`, `options.baseURL` + `options.apiKey`) | `fireworks-azure/<deployment>` |
-| Codex | `[model_providers.fireworks-azure]` in `config.toml` (`wire_api = "chat"`, key or `env_key = "AZURE_API_KEY"`) | `fireworks-azure` |
 | Pi | custom `openai-completions` provider in `models.json` (`baseUrl`, `authHeader`, key or `$AZURE_API_KEY`) + `defaultProvider` in `settings.json` | `fireworks-azure` |
 | Cursor | OpenAI-compatible URL, deployment, and key in `state.vscdb` | `<deployment>` |
 | VS Code | custom endpoint model in `chatLanguageModels.json`; key in `safeStorage` | `<deployment>` |
@@ -789,7 +851,9 @@ fireconnect opencode --azure --base-url https://<resource>.services.ai.azure.com
 `fireconnect <harness> status` reports `azure` as the provider with the endpoint and model.
 
 > Claude Code is left out on purpose: it speaks the Anthropic Messages API, which Foundry
-> doesn't offer. `model list` reads the Fireworks catalog and doesn't apply in Azure mode.
+> doesn't offer. Codex is left out too: Codex CLI 0.160+ removed `wire_api = "chat"`, the only
+> transport Foundry offers, so Codex can only route through the Fireworks gateway.
+> `model list` reads the Fireworks catalog and doesn't apply in Azure mode.
 > Pick a deployment with `--model`.
 
 ## CLI reference
@@ -816,6 +880,7 @@ fireconnect logout                 Clear the stored key (keychain entry + config
 fireconnect status                 Show sign-in state, machine environment, and key storage.
 fireconnect model list             Browse the serverless catalog (`models` is an alias).
 fireconnect configure              Set the provider (Azure/Foundry) and the BYOK keys.
+fireconnect configure --unset openai-api-key   Clear the saved OpenAI key (`--unset anthropic-api-key` for Anthropic).
 fireconnect claude demo              Race two models on the same prompt via Claude Code.
 fireconnect upgrade                Update FireConnect.
 fireconnect uninstall              Switch off + restore every harness, then remove FireConnect.
@@ -828,11 +893,17 @@ Create opens the browser, makes `fireconnect-{hostname}`, and stores it in the O
 It then tells you which account and where the key went. Paste hides what you type, checks it live,
 and stores it only if valid. `--paste` skips the question; `--with-token` reads from stdin (CI);
 `--account <id>` signs into an enterprise SSO account. Already signed in? `login` asks before
-swapping the key. `--force` skips that check for rotations.
+swapping the key. `--force` skips that check for rotations. Either way, once the key checks out,
+`login` re-saves it into every connected harness that keeps its own copy, so a rotated key
+reaches all of them.
 
 `logout` deletes the local key and offers to revoke the machine key on the server too (`--revoke`
 skips the question and revokes). You can skip `login` entirely: `fireconnect claude` signs you in
 inline when it needs a key.
+
+`configure --unset openai-api-key` and `configure --unset anthropic-api-key` clear a saved provider
+key, and remove it from every harness that stores it (Claude Code, OpenCode, Pi, and VS Code).
+Claude Code keeps an Anthropic key it signs in with.
 
 ## Keys and storage
 
@@ -864,9 +935,11 @@ copying it into secret storage, and combining `login` with a key-saving option (
 | Claude session breaks after pasting an image | A [text-only](#text-only-models-and-images) slot was active. `/rewind`, then give that slot a vision model. |
 | `claude-fable-5-1` fails with `model_not_found` | The gateway serves Opus / Sonnet / Haiku by concrete id, but Fable needs data retention enabled on the upstream account — without it every Fable call 404s while connected. Pick another row with `/model`, or ask about account access. |
 | Resumed session says the model "could not be restored" | Normal with Fireworks models: the transcript records the serving backend (e.g. `accounts/fireworks/models/…`), which Claude doesn't recognize as a model id, so it falls back to your configured default. If no default is pinned, that means native Opus — check the status line for a fresh Opus slice and re-pick your row if so. |
+| ChatGPT app: ``Model provider `fireworks-ai` not found`` when reopening a thread | `fireconnect codex off` removed the provider the thread was started on. ChatGPT app threads started on Fireworks won't open until you run `fireconnect codex on` again. |
 | Claude Code shows a scary cost estimate | It uses [Anthropic list prices](#pricing-estimates). Check `fireconnect claude status` for real Fireworks rates. |
 | Claude Code says auto mode classifier requests are billed in this session | Expected through the Fireworks gateway, once per session. Auto mode keeps working with its local classifier, which runs on your Sonnet slot's model: native Sonnet bills your Anthropic account. Pin a Fireworks model with `fireconnect claude --sonnet <id>` to bill classifier requests (and all Sonnet-tier calls) at Fireworks rates. |
-| `firerouter` missing from a picker | It's opt-in — pick it directly with `on --model firerouter`. Not on Fire Pass keys. |
+| `firerouter` missing from a picker | It's listed for standard `fw_` keys only, not Fire Pass. Re-run `fireconnect <harness>` to refresh the picker, or select it with `on --model firerouter`. |
+| A harness gets 401s after you rotated your Fireworks key | Run `fireconnect login`. It re-saves the new key into every connected harness. Quit VS Code first so it doesn't overwrite the update. |
 | `login` fails with a key-storage conflict | `FIREWORKS_API_KEY` is set. Unset it so FireConnect can store a key. |
 | `/model` picker ignores your main model | An old `env.ANTHROPIC_MODEL` is overriding it. Re-run `fireconnect claude` once to migrate. |
 | PowerShell install fails (`set: pipefail\r`) | Install from [Git Bash](#install-notes). |
@@ -890,8 +963,9 @@ Upgrading from **before 0.9.0** with Claude Code connected asks before briefly r
 your original settings, then tells you to reconnect with `fireconnect claude`. From **0.9.0**
 on, reinstalls and upgrades leave harness settings alone except re-saving keys and small forward
 migrations (currently: VS Code's provider `apiType`, adding `ENABLE_TOOL_SEARCH` to
-managed Claude Code settings, and registering / refreshing the Fireworks catalog in each
-connected harness's picker). Your other settings and stored API key are kept either way.
+managed Claude Code settings, registering / refreshing the Fireworks catalog in each
+connected harness's picker, switching Codex to [its own sign-in](#signing-in-with-chatgpt),
+and letting Codex send MCP tools directly). Your other settings and stored API key are kept either way.
 
 After fetching the update, `fireconnect upgrade` runs its final step in a fresh process so
 migrations come from the new version, not the old process's cache. For the move off older

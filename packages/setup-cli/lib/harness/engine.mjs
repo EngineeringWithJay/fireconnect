@@ -18,13 +18,11 @@ import {
   resolveHarnessOnApiKey,
 } from "../keys/harness-api-key.mjs";
 import {
-  firerouterByokEnvRefHeaders,
   firerouterCredentialsApplyOnGateway,
   resolveExplicitFirerouterCredential,
   resolveFirerouterByokHeaders,
   resolveFirerouterPlan,
 } from "../firerouter/flag.mjs";
-import { resolveOpenaiKey } from "../firerouter/core.mjs";
 import {
   isHarnessEnabled,
   readProviderSettings,
@@ -47,7 +45,7 @@ import { buildFireconnectTelemetryHeaders } from "../telemetry/request-headers.m
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<string>} resolveKey
  *   Harness-local key (used by the registry's resolveKey and, typically, fullKey).
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<import("./types.mjs").HarnessContext>} [resolveOnContext]
- *   Resolve state-dependent defaults needed before validating `on` options.
+ *   Resolve state-dependent defaults for `on`; the result is validated and dispatched.
  * @property {(ctx: import("./types.mjs").HarnessContext) => object} paths
  * @property {string} keyEnvRef
  * @property {import("../firerouter/flag.mjs").FirerouterCapability|null} [firerouter]
@@ -66,10 +64,15 @@ import { buildFireconnectTelemetryHeaders } from "../telemetry/request-headers.m
  * @property {(ctx: import("./types.mjs").HarnessContext, paths: object) => Promise<{ apiKeyRef?: string, effectiveKey: string, reusedExistingKey?: boolean }>} [resolveOnKey]
  *   Custom `on` key resolution (default: resolveHarnessOnApiKey with keyEnvRef + getExistingHarnessKey).
  * @property {(args: { ctx: object, keyType: string }) => void} [precheck]  Throw before enabling (e.g. Codex firepass).
+ * @property {(modelId: string) => boolean} [servedOutsideCatalog]  `--model` ids this harness
+ *   serves that the serverless catalog never lists (Codex's sign-in GPT models); they skip
+ *   the catalog check.
  * @property {(args: { ctx: object, paths: object, apiKeyRef: string, effectiveKey: string, keyType: string, modelId: string, byokHeaders: Record<string,string>, telemetryHeaders: Record<string,string>, includeFirerouter: boolean, flags: object }) => Promise<{ model: string, modelsAdded?: string[], keyType: string }>} enable
  * @property {(ctx: import("./types.mjs").HarnessContext, effectiveKey: string) => Promise<void>} [envHookOn]
  * @property {(args: { ctx: object, paths: object, result: object, reusedExistingKey: boolean, keyType: string }) => void} [printConnected]
  *   Full success-output override (default: connected + restartHint).
+ * @property {(modelId: string) => string} [displayModelId]  How the model list after
+ *   `printConnected` names a model (Codex prints its FireRouter route as `firerouter`).
  * @property {() => void} [restartHint]
  * @property {(args: { ctx: object, paths: object, wasEnabled: boolean }) => Promise<"restored"|"stripped"|"unchanged">} [disable]
  * @property {(ctx: object) => Promise<void>} [prepareOff]  Stop the IDE before writing (Cursor/VS Code).
@@ -140,7 +143,7 @@ export async function engineOn(profile, ctx) {
       // Recover BYOK keys that live only in the harness's existing config
       // headers, so a repeat `on` without re-supplying them doesn't drop them.
       // VS Code alone uses catalogByok: firerouter BYOK belongs on the model
-      // entry, not the provider (OpenCode/Pi/Codex attach at provider level).
+      // entry, not the provider (OpenCode/Pi attach at provider level).
       byokHeaders = await resolveFirerouterByokHeaders({
         plan,
         catalogFirerouter,
@@ -148,24 +151,12 @@ export async function engineOn(profile, ctx) {
         settingsEnv,
         preResolvedAnthropicKey,
       });
-    } else if (profile.firerouter.byok === "envref") {
-      // Codex forwards by env-var name. Both keys are resolved first so each
-      // env ref is only attached when a key is actually behind it; a dangling
-      // ref would send an empty header upstream.
-      const openaiKey = await resolveOpenaiKey({
-        apiKey: ctx.openaiKeyFromFlag ? ctx.openaiKey : "",
-        settingsEnv,
-        home: ctx.home,
-      });
-      byokHeaders = firerouterByokEnvRefHeaders(plan, {
-        catalogFirerouter,
-        anthropicKey: preResolvedAnthropicKey ?? "",
-        openaiKey,
-      });
     }
   }
 
-  await assertRequestedModelServable(modelId, { apiKey: effectiveKey, keyType });
+  if (!profile.servedOutsideCatalog?.(modelId)) {
+    await assertRequestedModelServable(modelId, { apiKey: effectiveKey, keyType });
+  }
 
   const result = await profile.enable({
     ctx,
@@ -185,6 +176,10 @@ export async function engineOn(profile, ctx) {
   if (profile.envHookOn) {
     await profile.envHookOn(ctx, effectiveKey);
   }
+  // An upgrade's re-`on` reports through its own note.
+  if (ctx.quiet) {
+    return;
+  }
 
   const modelsAdded = result.modelsAdded ?? [result.model];
   const firerouterIncluded = Boolean(
@@ -197,11 +192,13 @@ export async function engineOn(profile, ctx) {
     routingPreference: ctx.routingPreference,
     routingSupported: isFirerouterModel(result.model),
     firepass: keyType === "firepass",
+    model: result.model,
   });
   if (profile.printConnected) {
     await profile.printConnected({ ctx, paths, result, reusedExistingKey, keyType });
-    printHarnessOnFootnotes(modelsAdded, footnotes, profile.restartHint, {
-      primaryModel: result.model,
+    const displayModelId = profile.displayModelId ?? ((model) => model);
+    printHarnessOnFootnotes(modelsAdded.map(displayModelId), footnotes, profile.restartHint, {
+      primaryModel: displayModelId(result.model),
     });
     return;
   }
@@ -352,12 +349,11 @@ function assertProfileCapabilities(profile) {
       && (
         capability.byok === "none"
         || capability.byok === "value"
-        || capability.byok === "envref"
       );
     if (!validByok || typeof capability.autoCatalog !== "boolean") {
       throw new Error(
         `Harness profile ${profile.id} must define firerouter as `
-          + "{ byok: \"none\"|\"value\"|\"envref\", autoCatalog: boolean, catalogByok?: boolean } or null.",
+          + "{ byok: \"none\"|\"value\", autoCatalog: boolean, catalogByok?: boolean } or null.",
       );
     }
     if (

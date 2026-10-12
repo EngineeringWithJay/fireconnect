@@ -42,10 +42,11 @@ describe("harness help flag contract", () => {
     }
   });
 
-  it("keeps Codex on env-reference BYOK without a routing preference", () => {
+  it("advertises no provider-key flags or routing preference on Codex, which uses its own sign-in", () => {
     const help = helpTextFor("codex");
-    assert.equal(getHarness("codex").firerouter.byok, "envref");
+    assert.equal(getHarness("codex").firerouter.byok, "none");
     assert.equal(advertises(help, "routing-preference"), false);
-    assert.equal(advertises(help, "anthropic-api-key"), true);
+    assert.equal(advertises(help, "anthropic-api-key"), false);
+    assert.equal(advertises(help, "openai-api-key"), false);
   });
 });

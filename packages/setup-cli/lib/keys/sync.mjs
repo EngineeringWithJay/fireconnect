@@ -1,13 +1,27 @@
 import { userSettingsPath } from "../harnesses/claude/core.mjs";
-import { refreshFirerouterClaudeKey } from "../harnesses/claude/firerouter.mjs";
+import { refreshFirerouterClaudeKey, removeClaudeSavedProviderKeys } from "../harnesses/claude/firerouter.mjs";
 import { codexConfigPath, refreshCodexGatewayKey } from "../harnesses/codex/core.mjs";
 import {
   deepseekCredentialsPath,
   deepseekSettingsPath,
   refreshDeepseekGatewayKey,
 } from "../harnesses/deepseek/core.mjs";
-import { opencodeConfigPath, refreshOpencodeGatewayKey } from "../harnesses/opencode/core.mjs";
-import { piAuthPath, refreshPiGatewayKey } from "../harnesses/pi/core.mjs";
+import {
+  opencodeConfigPath,
+  refreshOpencodeGatewayKey,
+  removeOpencodeSavedProviderKeys,
+} from "../harnesses/opencode/core.mjs";
+import {
+  piAuthPath,
+  piModelsPath,
+  refreshPiGatewayKey,
+  removePiSavedProviderKeys,
+} from "../harnesses/pi/core.mjs";
+import {
+  chatLanguageModelsPath,
+  refreshVscodeGatewayKey,
+  removeVscodeSavedProviderKeys,
+} from "../harnesses/vscode/core.mjs";
 import {
   copilotDataDbPath,
   refreshCopilotAppGatewayKey,
@@ -108,6 +122,12 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       hint: "fireconnect copilot-cli on",
       refresh: () => refreshCopilotCliGatewayKey({ providersPath: copilotProvidersPath({ home }), fireworksKey }),
     },
+    {
+      id: HARNESS.VSCODE,
+      label: "VS Code",
+      hint: "fireconnect vscode on",
+      refresh: () => refreshVscodeGatewayKey({ vscodePath: chatLanguageModelsPath({ home }), fireworksKey }),
+    },
   ];
   const notes = [];
   for (const { id, label, hint, refresh } of targets) {
@@ -126,10 +146,59 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
 }
 
 /**
+ * Remove saved provider keys (`x-anthropic-api-key`, `x-openai-api-key`) from
+ * every enabled Fireworks harness that bakes them into its own config, so a
+ * repeat `on` can't read them back. Never throws.
+ * @param {string} home
+ * @param {string[]} headerNames
+ * @returns {Promise<{ updated: string[], failed: { label: string, id: string }[] }>}
+ */
+export async function removeSavedProviderKeysFromHarnesses(home, headerNames) {
+  const { harnesses } = await readGlobalConfig(home);
+  const targets = [
+    {
+      id: HARNESS.CLAUDE,
+      label: "Claude Code",
+      remove: () => removeClaudeSavedProviderKeys({ settingsPath: userSettingsPath(home), headerNames }),
+    },
+    {
+      id: HARNESS.OPENCODE,
+      label: "OpenCode",
+      remove: () => removeOpencodeSavedProviderKeys({ configPath: opencodeConfigPath(home, ""), headerNames }),
+    },
+    {
+      id: HARNESS.PI,
+      label: "Pi",
+      remove: () => removePiSavedProviderKeys({ modelsPath: piModelsPath(home), headerNames }),
+    },
+    {
+      id: HARNESS.VSCODE,
+      label: "VS Code",
+      remove: () => removeVscodeSavedProviderKeys({ filePath: chatLanguageModelsPath({ home }), headerNames }),
+    },
+  ];
+  const updated = [];
+  const failed = [];
+  for (const { id, label, remove } of targets) {
+    if (!shouldSyncFireworksHarness(harnesses, id)) {
+      continue;
+    }
+    try {
+      if (await remove()) {
+        updated.push(label);
+      }
+    } catch {
+      failed.push({ id, label });
+    }
+  }
+  return { updated, failed };
+}
+
+/**
  * Post-upgrade key reconciliation: rebake every enabled Fireworks harness
  * config to plaintext literals (including legacy env-reference auth), repair
  * a stale global `{env:FIREWORKS_API_KEY}` ref when keychain holds the secret,
- * and reconcile the shell hook (Anthropic export for Codex BYOK).
+ * and reconcile the shell hook (dropping the legacy Codex provider-key exports).
  *
  * Key-independent harness migrations live in `system/forward-migrations.mjs`.
  * Never throws.
