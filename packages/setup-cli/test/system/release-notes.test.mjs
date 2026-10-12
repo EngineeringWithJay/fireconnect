@@ -75,6 +75,26 @@ describe("release notes", () => {
     assert.doesNotMatch(formatted, /safeguards|AUTO_MODE_SERVER|launchd|shim|Bugbot|Lean/i);
   });
 
+  it("formats the v0.9.9 user-facing summary", async () => {
+    const releases = await readReleaseNotes();
+    const release = releases.find((candidate) => candidate.version === "0.9.9");
+    assert.ok(release);
+
+    const formatted = formatReleaseNotes(release);
+    assert.match(formatted, /What's new in FireConnect v0\.9\.9/);
+    assert.match(formatted, /Codex starts on FireRouter/);
+    assert.match(formatted, /MCP servers and ChatGPT app connectors work in Codex/);
+    assert.match(formatted, /Rotate your Fireworks key without breaking a harness/);
+    assert.doesNotMatch(formatted, /claude live|on --model <id>|Code tab/);
+    assert.match(formatted, /Claude Code no longer takes `--anthropic-api-key`/);
+    assert.match(formatted, /`fireconnect configure --unset openai-api-key` and `--unset anthropic-api-key`/);
+    assert.match(formatted, /`fireconnect configure --provider fireworks`/);
+    assert.match(formatted, /OpenCode v2 lists your Fireworks models/);
+    assert.match(formatted, /OpenCode's `\/models` no longer lists routers like `glm-latest` twice/);
+    assert.doesNotMatch(formatted, /\u2014/);
+    assert.doesNotMatch(formatted, /\b(supports_search_tool|requires_openai_auth|launchd|shim|plist|standalone|lsof|Bugbot|Lean)\b/i);
+  });
+
   it("selects releases newer than the installed version", () => {
     const releases = [
       { version: "0.8.0", highlights: [] },

@@ -1,5 +1,6 @@
 import {
-  FIREROUTER_TAGLINE,
+  FIREROUTER_ASTRA_ROUTE,
+  firerouterTagline,
 } from "../../firerouter/core.mjs";
 import {
   MODEL_API_OVERRIDES as MODEL_OVERRIDES,
@@ -13,6 +14,7 @@ import { autoDisplayName, buildServerlessCatalogSnapshot, firerouterDisplayName,
 import {
   AUTO_INSTANT_MODEL_ID,
   AUTO_MODEL_ID,
+  FIREROUTER_MODEL_ID,
   FIREROUTER_ROUTER_ID,
   canonicalAutoModelId,
   fireworksModelSlug,
@@ -23,8 +25,16 @@ import {
 } from "../../fireworks/model-id.mjs";
 import { rowSupportsImageInput } from "../../fireworks/vision.mjs";
 import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { cachedListRateTable } from "../../pricing/list-price-cache.mjs";
+import { cachedCodexStockModels } from "./stock-models.mjs";
 
 export { MODEL_OVERRIDES };
+
+// Codex sorts its picker by priority and keeps catalog order for ties. The
+// FireRouter row leads, stock Codex's GPT rows keep their own priorities, and
+// Fireworks rows follow. Not a constant: a re-stamp must not reorder the picker.
+const CODEX_FIREROUTER_PRIORITY = 0;
+const CODEX_FIREWORKS_PRIORITY = 99;
 
 export const CODEX_CONSTANT_FIELDS = {
   shell_type: "shell_command",
@@ -42,11 +52,41 @@ export const CODEX_CONSTANT_FIELDS = {
   default_reasoning_summary: "none",
   experimental_supported_tools: [],
   base_instructions: "",
-  priority: 99,
   truncation_policy: { mode: "tokens", limit: 10000 },
   minimal_client_version: "0.0.1",
-  supports_search_tool: true,
+  // With true, Codex withholds MCP and app tools from the request and exposes
+  // them only through the client-executed `tool_search` tool. The Fireworks
+  // Responses API does not implement that protocol, so models never see the
+  // tools and every MCP call fails. With false, Codex sends them inline.
+  supports_search_tool: false,
 };
+
+// The constants every row needs to work through the Fireworks gateway. Stock
+// Codex's own GPT rows get only these, keeping the rest of Codex's row.
+export const CODEX_TRANSPORT_FIELDS = Object.freeze({
+  prefer_websockets: CODEX_CONSTANT_FIELDS.prefer_websockets,
+  supports_search_tool: CODEX_CONSTANT_FIELDS.supports_search_tool,
+});
+
+/**
+ * Re-stamp CODEX_CONSTANT_FIELDS onto catalog rows written by an earlier
+ * release, so a changed constant reaches rows that `codex on` keeps as-is
+ * (`--model` re-runs, offline re-runs, router rows the API no longer lists).
+ * Stock Codex's rows, the only ones with base instructions, get just the
+ * transport fields. Key order is preserved, so unchanged rows serialize
+ * byte-for-byte.
+ * @template {Record<string, unknown>} T
+ * @param {T[]} models
+ * @returns {T[]}
+ */
+export function withCodexConstantFields(models = []) {
+  return models.map((row) => {
+    if (!row || typeof row !== "object") {
+      return row;
+    }
+    return { ...row, ...(row.base_instructions ? CODEX_TRANSPORT_FIELDS : CODEX_CONSTANT_FIELDS) };
+  });
+}
 
 // Auto-compact at 80% of the window, not Codex's 90% default for an unset
 // limit: the compaction RPC resends the full history plus instructions/tool
@@ -131,6 +171,7 @@ export function buildCodexCatalogEntry(model) {
     display_name: model.displayName ?? model.name,
     description: model.description ?? "",
     ...CODEX_CONSTANT_FIELDS,
+    priority: CODEX_FIREWORKS_PRIORITY,
     // Guardian auto-review defaults to the OpenAI-only `codex-auto-review`
     // model, which the Fireworks gateway has no deployment for (404 on
     // /responses, fail-closed denial). Pin the reviewer to this same servable
@@ -139,7 +180,6 @@ export function buildCodexCatalogEntry(model) {
     auto_review_model_override: slug,
     input_modalities: supportsImageInput ? ["text", "image"] : ["text"],
     supports_parallel_tool_calls: supportsTools,
-    default_reasoning_level: reasoning.default,
     supported_reasoning_levels: reasoning.levels,
     reasoning_summary_format: reasoningSummaryFormat,
     web_search_tool_type: supportsImageInput ? "text_and_image" : "text",
@@ -164,17 +204,25 @@ export function buildCodexCatalogEntryForRouter(routerId, baseModel, displayName
 /**
  * Codex catalog row for firerouter or a selected firerouter* model.
  * Shares FireRouter static metadata (context, vision, tools, tagline).
+ * No default effort is set: the row advertises the ladder and Codex applies
+ * its own default.
  */
 export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID) {
   const spec = lookupModelSpec(modelId);
   const stored = shortFireworksModelRef(modelId);
   const exact = isFirerouterModel(modelId);
   const slug = exact ? "firerouter" : stored;
+  let displayName = firerouterDisplayName(stored);
+  if (exact) {
+    displayName = spec?.label ?? "FireRouter";
+  } else if (stored === CODEX_FIREROUTER_ROUTE) {
+    displayName = "FireRouter";
+  }
   return {
     ...buildCodexCatalogEntry({
       name: FIREROUTER_ROUTER_ID,
-      displayName: exact ? (spec?.label ?? "FireRouter") : firerouterDisplayName(stored),
-      description: FIREROUTER_TAGLINE,
+      displayName,
+      description: firerouterTagline(stored),
       contextLength: spec?.capabilities.contextWindow ?? 0,
       supportsImageInput: spec?.capabilities.vision ?? false,
       supportsTools: spec?.capabilities.toolCalling ?? true,
@@ -183,6 +231,184 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
     slug,
     auto_review_model_override: slug,
   };
+}
+
+/**
+ * GPT families listed for Codex's sign-in when stock Codex's own list can't be
+ * read (no Codex on PATH, or the probe failed), newest model of each.
+ * The Fireworks gateway hands `gpt-*` IDs to FireRouter, which bills them to
+ * that sign-in. models.dev can't say which models a ChatGPT plan pays for, so
+ * the families are fixed here and models.dev picks the model.
+ */
+const CODEX_OPENAI_FAMILIES = Object.freeze(["astra", "sol", "luna"]);
+// Each family's newest model when this release shipped. Used until the
+// models.dev cache is warm (first run offline, or a cache from an older release).
+const CODEX_OPENAI_FALLBACK_IDS = Object.freeze({
+  astra: "gpt-6-astra",
+  sol: "gpt-6.1-sol",
+  luna: "gpt-6-luna",
+});
+// A versioned family model (`gpt-6.1-sol`); aliases such as `gpt-5.6` share
+// the family on models.dev but aren't listed.
+const CODEX_OPENAI_ID_RE = /^gpt-(\d+(?:\.\d+)*)-([a-z]+)$/;
+const CODEX_OPENAI_FALLBACK_CONTEXT_WINDOW = 1_050_000;
+
+/** Compare dotted versions numerically: "6.1" > "6" > "5.6". */
+function compareVersions(a, b) {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+/**
+ * GPT models from stock Codex's own catalog, in its picker order (priority).
+ * The gateway hands only `gpt-*` IDs to FireRouter, so other rows are left out.
+ * @param {Array<{ id: string }> | null} stock
+ */
+function stockGptIds(stock) {
+  return (stock ?? [])
+    .filter((row) => row.slug.startsWith("gpt-"))
+    .toSorted((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity))
+    .map((row) => row.slug);
+}
+
+/**
+ * The OpenAI model IDs Codex's picker lists: the GPT models stock Codex lists
+ * for the user's sign-in, else the highest-versioned models.dev model in each
+ * family, else that family's fallback.
+ * @param {Record<string, { family?: string }>} [modelsDev] models.dev's OpenAI rows, keyed by model ID
+ * @param {Array<{ id: string }> | null} [stock] stock Codex's model list
+ * @returns {string[]}
+ */
+export function codexOpenaiModelIds(modelsDev = cachedListRateTable("openai"), stock = cachedCodexStockModels()) {
+  const fromCodex = stockGptIds(stock);
+  if (fromCodex.length) {
+    return fromCodex;
+  }
+  const newest = new Map();
+  for (const [id, row] of Object.entries(modelsDev ?? {})) {
+    const match = CODEX_OPENAI_ID_RE.exec(id);
+    if (!match || row?.family !== `gpt-${match[2]}`) {
+      continue;
+    }
+    const [, version, family] = match;
+    const current = newest.get(family);
+    if (!current || compareVersions(version, current.version) > 0) {
+      newest.set(family, { id, version });
+    }
+  }
+  return CODEX_OPENAI_FAMILIES.map(
+    (family) => newest.get(family)?.id ?? CODEX_OPENAI_FALLBACK_IDS[family],
+  );
+}
+
+/**
+ * Whether `slug` is one of the OpenAI models Codex's sign-in pays for: a
+ * listed one, or a shipped fallback so a model picked from an older list stays on.
+ * @param {string} slug
+ * @param {Record<string, { family?: string }>} [modelsDev]
+ */
+export function isCodexOpenaiModelSlug(slug, modelsDev = cachedListRateTable("openai")) {
+  if (typeof slug !== "string" || !slug) {
+    return false;
+  }
+  return Object.values(CODEX_OPENAI_FALLBACK_IDS).includes(slug)
+    || codexOpenaiModelIds(modelsDev).includes(slug);
+}
+
+/** `gpt-6.1-sol` -> `GPT-6.1 Sol`, for when models.dev has no name yet. */
+function fallbackOpenaiLabel(id) {
+  const match = /^gpt-([\d.]+)-(.+)$/.exec(id);
+  return match ? `GPT-${match[1]} ${match[2][0].toUpperCase()}${match[2].slice(1)}` : id;
+}
+
+/**
+ * Stock Codex's own row for `id`, unchanged except for what the Fireworks route
+ * needs: the transport fields and a reviewer Fireworks serves. A GPT model
+ * behaves as it does in stock Codex. Without a stock row, one built from
+ * models.dev.
+ * @param {string} id
+ * @param {Record<string, { label?: string, contextWindow?: number, imageInput?: boolean }>} [modelsDev]
+ *   models.dev's OpenAI rows, keyed by model ID
+ * @param {Array<{ slug: string }> | null} [stock] stock Codex's catalog rows
+ */
+export function buildCodexOpenaiCatalogEntry(
+  id,
+  modelsDev = cachedListRateTable("openai"),
+  stock = cachedCodexStockModels(),
+) {
+  const native = stock?.find((row) => row.slug === id);
+  if (native) {
+    return {
+      ...native,
+      ...CODEX_TRANSPORT_FIELDS,
+      // Codex's auto-review model isn't served on Fireworks; review with this one.
+      auto_review_model_override: id,
+    };
+  }
+  const row = modelsDev[id] ?? {};
+  const label = row.label || fallbackOpenaiLabel(id);
+  return {
+    ...buildCodexCatalogEntry({
+      name: id,
+      displayName: label,
+      description: `Every turn on ${label}, paid by your Codex sign-in.`,
+      contextLength: row.contextWindow ?? CODEX_OPENAI_FALLBACK_CONTEXT_WINDOW,
+      supportsImageInput: row.imageInput ?? true,
+      supportsTools: true,
+    }),
+    slug: id,
+    auto_review_model_override: id,
+    default_reasoning_level: "medium",
+  };
+}
+
+/**
+ * Codex's one FireRouter row, labelled just "FireRouter" and printed as
+ * `firerouter`. Requests name the GPT Astra route, so FireRouter pairs open
+ * models with GPT Astra; `codex on --model firerouter` selects it.
+ */
+export const CODEX_FIREROUTER_ROUTE = FIREROUTER_ASTRA_ROUTE;
+
+/** The model ID FireConnect prints for Codex: the FireRouter row reads as `firerouter`. */
+export function codexDisplayModelId(model) {
+  return shortFireworksModelRef(model) === CODEX_FIREROUTER_ROUTE ? FIREROUTER_MODEL_ID : model;
+}
+
+/**
+ * `models` with the FireRouter row and OpenAI models Codex's sign-in can
+ * use, rebuilt as one block at the top (their metadata is static, so a re-`on`
+ * refreshes it); the remaining rows keep their order. The serverless catalog's
+ * bare `firerouter` row is dropped, so the picker offers one FireRouter row.
+ * @param {Array<{ slug?: string }>} models
+ */
+export function withCodexSignInRows(models = []) {
+  const block = [
+    { ...buildCodexFirerouterCatalogEntry(CODEX_FIREROUTER_ROUTE), priority: CODEX_FIREROUTER_PRIORITY },
+    ...codexOpenaiModelIds().map((id) => buildCodexOpenaiCatalogEntry(id)),
+  ];
+  const blockSlugs = new Set(block.map((row) => row.slug));
+  return [
+    ...block,
+    ...models.filter((row) => !blockSlugs.has(row?.slug) && row?.slug !== FIREROUTER_MODEL_ID),
+  ];
+}
+
+/**
+ * The sign-in block's model IDs that `models` lacks: the FireRouter row and the
+ * newest OpenAI model of each family. Empty when the picker is current.
+ * @param {Array<{ slug?: string }>} models
+ * @returns {string[]}
+ */
+export function missingCodexSignInRows(models = []) {
+  const slugs = new Set(models.map((row) => row?.slug));
+  return [CODEX_FIREROUTER_ROUTE, ...codexOpenaiModelIds()].filter((id) => !slugs.has(id));
 }
 
 export const AUTO_TAGLINE = "Routes each user turn across Fireworks open models.";
@@ -235,6 +461,7 @@ export function pruneCodexCatalogRows(models = [], snapshot = null) {
     }
     return isFirerouterModelPattern(slug)
       || isAutoModelId(slug)
+      || isCodexOpenaiModelSlug(slug)
       || Boolean(findSnapshotEntry(snapshot, slug));
   });
 }
@@ -245,7 +472,11 @@ export function pruneCodexCatalogRows(models = [], snapshot = null) {
  * kept rows from the fresh catalog (display names / context windows drift).
  * The catalog file is fireconnect-owned, so the picker tracks the live catalog
  * instead of going stale until the next fresh setup or upgrade.
- * Kept rows keep their position; only their metadata is replaced.
+ * Kept rows keep their position; only their metadata is replaced. Rows the
+ * fresh catalog does not serve (e.g. a `--model firerouter/<path>` pick) are
+ * carried over verbatim: an already-written `default_reasoning_level` may be
+ * the user's own override, and fireconnect cannot tell it apart from its own
+ * write, so it is left alone.
  */
 export function refreshCodexCatalogRows(models = [], snapshot = null, freshModels = []) {
   const freshBySlug = new Map();
@@ -262,6 +493,7 @@ export function refreshCodexCatalogRows(models = [], snapshot = null, freshModel
       !isCodexUnsupportedMiniMaxModel(slug)
       && (isFirerouterModelPattern(slug)
         || isAutoModelId(slug)
+        || isCodexOpenaiModelSlug(slug)
         || Boolean(findSnapshotEntry(snapshot, slug)))
     ),
   });
@@ -292,6 +524,8 @@ export function addCodexSelectedModel(models, catalog, modelId) {
     entry = buildCodexFirerouterCatalogEntry(modelId);
   } else if (isAutoModelId(modelId)) {
     entry = buildCodexAutoCatalogEntry(modelId);
+  } else if (isCodexOpenaiModelSlug(modelId)) {
+    entry = buildCodexOpenaiCatalogEntry(modelId);
   } else {
     entry = catalog?.models?.find((row) => codexRowMatchesModelId(row, modelId));
   }

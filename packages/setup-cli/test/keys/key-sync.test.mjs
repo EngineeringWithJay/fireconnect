@@ -8,7 +8,24 @@ import { piAuthPath } from "../../lib/harnesses/pi/core.mjs";
 import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import { opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
-import { runCli, withTempHome } from "../helpers.mjs";
+import {
+  addFireworksProvider,
+  buildAzureModelEntry,
+  buildModelEntry,
+  chatLanguageModelsPath,
+  isVscodeRunning,
+  makeFireconnectSecretId,
+  refreshVscodeGatewayKey,
+  vscodeStateDbPath,
+  writeChatLanguageModels,
+} from "../../lib/harnesses/vscode/core.mjs";
+import { aesEncrypt, linuxSecretServiceReachable } from "../../lib/harnesses/vscode/safestorage.mjs";
+import {
+  ensureItemTable,
+  readItemTableValue,
+  writeItemTableValue,
+} from "../../lib/harnesses/vscode/vscdb-sqlite.mjs";
+import { itIfSqlite, runCli, withTempHome } from "../helpers.mjs";
 
 const NEW_KEY = "fw_fresh_key_000000000000000000000";
 
@@ -162,6 +179,88 @@ describe("syncBakedKeysAfterStore", () => {
       );
       assert.equal((await readJson(piAuthPath(home))).fireworks.key, NEW_KEY);
     });
+  });
+
+  itIfSqlite("re-keys VS Code's secret storage and leaves an Azure provider alone", { skip: isVscodeRunning() && "VS Code is running" }, async () => {
+    const saved = {
+      plaintext: process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT,
+      xdg: process.env.XDG_CONFIG_HOME,
+    };
+    process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT = "1";
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      await withTempHome("key-sync-vscode-", async (home) => {
+        await enableHarnessesForSync(home, ["vscode"]);
+        const vscodePath = chatLanguageModelsPath({ home });
+        const stateDbPath = vscodeStateDbPath({ vscodePath });
+        const secretId = makeFireconnectSecretId();
+        const writeProvider = (models) => writeChatLanguageModels(
+          vscodePath,
+          addFireworksProvider([], { secretId, models }),
+        );
+        await ensureItemTable(stateDbPath);
+        await writeItemTableValue(stateDbPath, `secret://${secretId}`, "fw_stale_gateway_00000000000000000");
+        await writeProvider([buildModelEntry("accounts/fireworks/models/test-model")]);
+
+        const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
+        assert.equal(notes.length, 1, notes.join("\n"));
+        assert.match(notes[0], /VS Code/);
+        assert.equal(await readItemTableValue(stateDbPath, `secret://${secretId}`), NEW_KEY);
+        assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+
+        await writeItemTableValue(stateDbPath, `secret://${secretId}`, "azure-key");
+        await writeProvider([buildAzureModelEntry("my-deployment", "https://example.openai.azure.com/openai/v1")]);
+        assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+        assert.equal(await readItemTableValue(stateDbPath, `secret://${secretId}`), "azure-key");
+      });
+    } finally {
+      for (const [name, value] of [["FIRECONNECT_VSCODE_SECRET_PLAINTEXT", saved.plaintext], ["XDG_CONFIG_HOME", saved.xdg]]) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  itIfSqlite("leaves an undecryptable keyring-encrypted VS Code secret untouched", {
+    skip: (process.platform !== "linux" && "Linux safeStorage only")
+      || (linuxSecretServiceReachable() && "a Secret Service could decrypt the probe")
+      || (isVscodeRunning() && "VS Code is running"),
+  }, async () => {
+    const saved = {
+      plaintext: process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT,
+      xdg: process.env.XDG_CONFIG_HOME,
+    };
+    delete process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      await withTempHome("key-sync-vscode-keyring-", async (home) => {
+        await enableHarnessesForSync(home, ["vscode"]);
+        const vscodePath = chatLanguageModelsPath({ home });
+        const stateDbPath = vscodeStateDbPath({ vscodePath });
+        const secretId = makeFireconnectSecretId();
+        const keyringBlob = JSON.stringify(aesEncrypt("fw_keyring_key_0000000000000000000", "keyring-only-pw", "v11", 1));
+        await ensureItemTable(stateDbPath);
+        await writeItemTableValue(stateDbPath, `secret://${secretId}`, keyringBlob);
+        await writeChatLanguageModels(
+          vscodePath,
+          addFireworksProvider([], { secretId, models: [buildModelEntry("accounts/fireworks/models/test-model")] }),
+        );
+
+        await assert.rejects(
+          refreshVscodeGatewayKey({ vscodePath, stateDbPath, fireworksKey: NEW_KEY }),
+          /could not decrypt/i,
+        );
+        const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
+        assert.equal(notes.length, 1, notes.join("\n"));
+        assert.match(notes[0], /Couldn't update VS Code/);
+        assert.equal(await readItemTableValue(stateDbPath, `secret://${secretId}`), keyringBlob);
+      });
+    } finally {
+      for (const [name, value] of [["FIRECONNECT_VSCODE_SECRET_PLAINTEXT", saved.plaintext], ["XDG_CONFIG_HOME", saved.xdg]]) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("login propagates a stored key to other enabled harness baked configs", async () => {

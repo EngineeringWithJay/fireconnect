@@ -35,70 +35,56 @@ const MAX_LEVELS = [...STANDARD_LEVELS, reasoningLevel("max")];
  * docs confirm it (GLM 5.2, GLM 5.3 incl. Flash, DeepSeek V4 Pro/Flash). Some models may treat the
  * lower tiers as a no-op; the tier is still selectable rather than absent.
  *
- * `default` stays `high` for every model.
+ * FireConnect never sets a default effort: the table carries ladders only, and
+ * each harness applies its own default.
  */
 export const MODEL_REASONING = {
   "accounts/fireworks/models/glm-5p2": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/glm-5p3": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/glm-5p3-fast": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/glm-5p3-flash": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/deepseek-v4-flash": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/deepseek-v4-pro": {
-    default: "high",
     levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/kimi-k2p6": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/kimi-k2p7-code": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/minimax-m2p7": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/minimax-m3": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/gpt-oss-120b": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/qwen3p7-plus": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
   // Kimi K3 / K3 Fast (current Kimi generation; supersedes kimi-k2p6 / kimi-k2p7-code).
   "accounts/fireworks/models/kimi-k3": {
-    default: "high",
     levels: STANDARD_LEVELS,
   },
 };
 
 const DEFAULT_REASONING = {
-  default: "high",
   levels: STANDARD_LEVELS,
 };
 
@@ -112,7 +98,7 @@ const DEFAULT_REASONING = {
  * unversioned base ref (`deepseek-v4-flash`) — a trailing pure-numeric version
  * suffix and retries. Falls back to {@link DEFAULT_REASONING}.
  * @param {string} modelRef full model ref, e.g. `accounts/fireworks/models/deepseek-v4-flash-0731`
- * @returns {{ default: string, levels: object[] }}
+ * @returns {{ levels: object[] }}
  */
 export function reasoningConfigFor(modelRef) {
   const candidates = [modelRef];

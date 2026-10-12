@@ -6,8 +6,6 @@ import {
   firerouterRequiresOpenaiKey,
 } from "../fireworks/model-id.mjs";
 import {
-  ANTHROPIC_BYOK_HEADER,
-  OPENAI_BYOK_HEADER,
   ROUTING_PREFERENCE_HEADER,
   firerouterByokHeaders,
   normalizeRoutingPreference,
@@ -19,10 +17,6 @@ import {
 export const FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE =
   "Ask the Fireworks team to enable FireRouter for your account.";
 
-export const FIREROUTER_ENV_BYOK_REQUIRED_MESSAGE =
-  "FireRouter needs an Anthropic key in your environment. Export ANTHROPIC_API_KEY, "
-  + "or pass --anthropic-api-key with codex on.";
-
 export const FIREROUTER_BYOK_REQUIRED_MESSAGE =
   "FireRouter needs your Anthropic API key. "
   + "Set ANTHROPIC_API_KEY, pass --anthropic-api-key <sk-ant-...>, "
@@ -30,15 +24,12 @@ export const FIREROUTER_BYOK_REQUIRED_MESSAGE =
 
 /**
  * Resolve the error message for a missing FireRouter credential requirement.
- * @param {{ byok?: "value"|"envref"|"none" }|null|undefined} firerouter
+ * @param {{ byok?: "value"|"none" }|null|undefined} firerouter
  * @returns {string}
  */
 export function firerouterCredentialsRequiredMessage(firerouter) {
   if (firerouter?.byok === "none") {
     return FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE;
-  }
-  if (firerouter?.byok === "envref") {
-    return FIREROUTER_ENV_BYOK_REQUIRED_MESSAGE;
   }
   return FIREROUTER_BYOK_REQUIRED_MESSAGE;
 }
@@ -52,7 +43,7 @@ export function firerouterCredentialsRequiredMessage(firerouter) {
  * of failing the connect.
  *
  * @param {{
- *   firerouter?: { byok?: "value"|"envref"|"none" }|null,
+ *   firerouter?: { byok?: "value"|"none" }|null,
  *   ctx?: { anthropicKey?: string, anthropicKeyFromFlag?: boolean, home?: string },
  *   settingsEnv?: Record<string, string>,
  *   allowPromptSkip?: boolean,
@@ -90,7 +81,7 @@ export async function resolveExplicitFirerouterCredential({
 /**
  * Whether a harness accepts `--routing-preference` on `on`. Matches the
  * validation in harness.mjs (custom-header BYOK harnesses only).
- * @param {{ byok?: "value"|"envref"|"none" }|null|undefined} firerouter
+ * @param {{ byok?: "value"|"none" }|null|undefined} firerouter
  * @returns {boolean}
  */
 export function supportsRoutingPreference(firerouter) {
@@ -99,31 +90,25 @@ export function supportsRoutingPreference(firerouter) {
 
 /**
  * Whether a harness accepts `--anthropic-api-key` on `on`.
- * Value harnesses embed the key in config headers; envref harnesses (Codex)
- * persist it and export ANTHROPIC_API_KEY via the shell hook. Claude Code
- * (`nativeAnthropicKey`) accepts it for native auth even though FireRouter
- * itself needs no BYOK there.
- * @param {{ byok?: "value"|"envref"|"none", nativeAnthropicKey?: boolean }|null|undefined} firerouter
+ * Value harnesses embed the key in config headers. Claude Code refuses it:
+ * its own sign-in pays for Claude turns.
+ * @param {{ byok?: "value"|"none" }|null|undefined} firerouter
  * @returns {boolean}
  */
 export function supportsAnthropicApiKeyFlag(firerouter) {
-  return firerouter?.byok === "value"
-    || firerouter?.byok === "envref"
-    || firerouter?.nativeAnthropicKey === true;
+  return firerouter?.byok === "value";
 }
 
 /**
- * Whether a harness accepts `--openai-api-key` on `on`. Mirrors the Anthropic
- * flag: value harnesses embed the key in config headers, envref harnesses
- * (Codex) persist it and export OPENAI_API_KEY via the shell hook, and Claude
- * Code carries it in ANTHROPIC_CUSTOM_HEADERS next to the Fireworks key.
- * @param {{ byok?: "value"|"envref"|"none", nativeAnthropicKey?: boolean }|null|undefined} firerouter
+ * Whether a harness accepts `--openai-api-key` on `on`. Value harnesses embed
+ * the key in config headers, and Claude Code carries it in
+ * ANTHROPIC_CUSTOM_HEADERS next to the Fireworks key.
+ * @param {{ byok?: "value"|"none", customHeaderOpenaiKey?: boolean }|null|undefined} firerouter
  * @returns {boolean}
  */
 export function supportsOpenaiApiKeyFlag(firerouter) {
   return firerouter?.byok === "value"
-    || firerouter?.byok === "envref"
-    || firerouter?.nativeAnthropicKey === true;
+    || firerouter?.customHeaderOpenaiKey === true;
 }
 
 /**
@@ -267,37 +252,6 @@ export async function resolveFirerouterByokHeaders({
   const preference = normalizeRoutingPreference(ctx.routingPreference);
   if (preference !== null) {
     headers[ROUTING_PREFERENCE_HEADER] = String(preference);
-  }
-  return headers;
-}
-
-/**
- * Env-reference BYOK headers for Codex, which forwards provider keys by
- * env-var NAME (`env_http_headers`) rather than value. Each env ref is
- * attached only when the selection needs it AND a key is actually behind it
- * (`anthropicKey` on Anthropic-requiring selections, `openaiKey` on bare
- * firerouter or a GPT member) — a ref with no key behind it would send an
- * empty header upstream, so it stays absent. Otherwise `{}`. Pure — reads
- * only the plan plus the resolved keys.
- * @param {FirerouterPlan} plan
- * @returns {Record<string, string>}
- */
-export function firerouterByokEnvRefHeaders(
-  plan,
-  { catalogFirerouter = false, anthropicKey = "", openaiKey = "" } = {},
-) {
-  if (!plan.isFirerouter && !catalogFirerouter) {
-    return {};
-  }
-  /** @type {Record<string, string>} */
-  const headers = {};
-  // Pure-Fireworks firerouter paths need no Anthropic key, even when the
-  // catalog entry is registered (catalogFirerouter).
-  if (plan.requiresAnthropicKey && anthropicKey?.trim()) {
-    headers[ANTHROPIC_BYOK_HEADER] = "ANTHROPIC_API_KEY";
-  }
-  if (openaiKey?.trim() && (plan.requiresOpenaiKey || isFirerouterModel(plan.mainModel))) {
-    headers[OPENAI_BYOK_HEADER] = "OPENAI_API_KEY";
   }
   return headers;
 }

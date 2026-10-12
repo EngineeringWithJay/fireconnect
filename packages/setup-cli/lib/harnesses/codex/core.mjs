@@ -26,10 +26,13 @@ import {
 import {
   addCodexSelectedModel,
   buildCodexCatalogFromSnapshot,
+  CODEX_FIREROUTER_ROUTE,
   codexCatalogContainsModel,
   codexModelExclusionReason,
   pruneCodexCatalogRows,
   refreshCodexCatalogRows,
+  withCodexConstantFields,
+  withCodexSignInRows,
 } from "./catalog.mjs";
 import {
   filterCatalogForKeyType,
@@ -41,15 +44,14 @@ import {
 import {
   getServerlessCatalogSnapshot,
 } from "../../fireworks/serverless-catalog-cache.mjs";
-import {
-  AZURE_API_KEY_ENV,
-  AZURE_PROVIDER_LABEL,
-  DEFAULT_AZURE_MODEL,
-  MISSING_AZURE_API_KEY_MESSAGE,
-  MISSING_AZURE_BASE_URL_MESSAGE,
-  normalizeAzureBaseUrl,
-} from "../../fireworks/azure-core.mjs";
+import { AZURE_API_KEY_ENV } from "../../fireworks/azure-core.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
+import {
+  ANTHROPIC_BYOK_HEADER,
+  omitHeaders,
+  OPENAI_BYOK_HEADER,
+  withoutHeaders,
+} from "../../firerouter/core.mjs";
 export { printCodexRestartHint } from "../../cli/messages.mjs";
 
 export const CODEX_CONFIG_RELATIVE_PATH = ".codex/config.toml";
@@ -60,12 +62,22 @@ export const CODEX_FIREWORKS_PROVIDER_ID = "fireworks-ai";
 export const CODEX_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
 export const CODEX_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
 export const CODEX_PROVIDER_TABLE = `model_providers.${CODEX_FIREWORKS_PROVIDER_ID}`;
-// Codex routes Foundry through a distinct provider table so it never collides
-// with the direct Fireworks gateway. Foundry exposes Chat Completions at the
-// resource-root /openai/v1, so the Azure variant uses wire_api = "chat".
+// Foundry routing written by releases before Codex CLI 0.160 removed
+// `wire_api = "chat"`. FireConnect no longer writes it, but still owns it so
+// `status` reports it and `off`/`uninstall` restore the pre-FireConnect config.
 export const CODEX_AZURE_PROVIDER_ID = "fireworks-azure";
 export const CODEX_AZURE_PROVIDER_TABLE = `model_providers.${CODEX_AZURE_PROVIDER_ID}`;
 export const CODEX_AZURE_API_KEY_ENV_REF = `{env:${AZURE_API_KEY_ENV}}`;
+// In ChatGPT-login mode, Codex signs in with ChatGPT and sends that login as
+// Authorization, so the Fireworks key moves to this header. FireRouter can use
+// the ChatGPT login for GPT turns.
+export const CODEX_CHATGPT_FIREWORKS_KEY_HEADER = "x-fireworks-api-key";
+// What a first `codex on` selects: GPT Astra for hard turns, paid by Codex's
+// sign-in, and open models for the rest.
+export const CODEX_DEFAULT_MODEL = CODEX_FIREROUTER_ROUTE;
+// Provider-key headers earlier releases wrote into the gateway provider. Codex's
+// own sign-in pays for GPT turns now, so `on` removes them.
+const CODEX_PROVIDER_KEY_HEADERS = Object.freeze([ANTHROPIC_BYOK_HEADER, OPENAI_BYOK_HEADER]);
 
 export function codexConfigPath(home, configPath = "") {
   return configPath || path.join(home, CODEX_CONFIG_RELATIVE_PATH);
@@ -95,28 +107,50 @@ function readTomlDoc(raw) {
   return parseToml(raw);
 }
 
+/**
+ * The Fireworks key a ChatGPT-login provider table carries in its headers, or ""
+ * when the table is not in that mode.
+ * @param {Record<string, unknown> | undefined} table
+ */
+export function codexChatgptLoginFireworksKey(table) {
+  if (!table || table.requires_openai_auth !== true) {
+    return "";
+  }
+  const headers = table.http_headers && typeof table.http_headers === "object"
+    ? table.http_headers
+    : {};
+  const entry = Object.entries(headers).find(
+    ([name]) => name.toLowerCase() === CODEX_CHATGPT_FIREWORKS_KEY_HEADER,
+  );
+  return typeof entry?.[1] === "string" ? entry[1].trim() : "";
+}
+
 function isManagedProviderTable(table) {
   return table
     && table.base_url === CODEX_FIREWORKS_BASE_URL
     && (table.env_key === "FIREWORKS_API_KEY"
-      || typeof table.experimental_bearer_token === "string");
+      || typeof table.experimental_bearer_token === "string"
+      || Boolean(codexChatgptLoginFireworksKey(table)));
 }
 
-// The Azure provider table is identified by its FireConnect-owned table name
-// (`fireworks-azure`) plus a base_url and our auth marker — NOT by the host
-// being *.azure.com, so documented non-Azure proxy/APIM endpoints stay managed.
-function isManagedAzureProviderTable(table) {
-  return table
-    && typeof table.base_url === "string"
-    && table.base_url.length > 0
-    && (table.env_key === AZURE_API_KEY_ENV
-      || typeof table.experimental_bearer_token === "string");
+/**
+ * `headers` with the Fireworks key header set to `key`, dropping any other
+ * casing of the name so it is sent once.
+ * @param {unknown} headers
+ * @param {string} key
+ */
+function withChatgptLoginFireworksKey(headers, key) {
+  return {
+    ...withoutHeaders(headers, [CODEX_CHATGPT_FIREWORKS_KEY_HEADER]),
+    [CODEX_CHATGPT_FIREWORKS_KEY_HEADER]: key,
+  };
 }
 
 /**
  * Which FireConnect-managed provider, if any, owns routing in this doc. The
  * `firerouter` model is served on the normal Fireworks gateway provider, so it
  * reports "fireworks" with model `firerouter` — not a distinct variant.
+ * "azure" is only ever a legacy Foundry routing (see CODEX_AZURE_PROVIDER_ID).
  * @param {{ root: Record<string, unknown>, tables: Record<string, Record<string, unknown>> }} doc
  * @returns {"fireworks" | "azure" | null}
  */
@@ -128,17 +162,15 @@ export function fireconnectManagedVariant(doc) {
     return "fireworks";
   }
   if (doc.root.model_provider === CODEX_AZURE_PROVIDER_ID
-    && typeof doc.root.model === "string"
-    && doc.root.model.length > 0
-    && isManagedAzureProviderTable(doc.tables[CODEX_AZURE_PROVIDER_TABLE])) {
+    && doc.tables[CODEX_AZURE_PROVIDER_TABLE]) {
     return "azure";
   }
   return null;
 }
 
 /**
- * FireConnect owns routing when root model_provider/model point at one of our
- * managed provider tables (Fireworks gateway or Azure/Foundry).
+ * FireConnect owns routing when root model_provider points at one of our
+ * provider tables (Fireworks gateway or legacy Azure/Foundry).
  * @param {{ root: Record<string, unknown>, tables: Record<string, Record<string, unknown>> }} doc
  */
 export function fireconnectManaged(doc) {
@@ -179,6 +211,12 @@ export function codexStoredAuthRef(doc) {
   if (typeof bearer === "string" && bearer.trim()) {
     return bearer.trim();
   }
+  if (variant === "fireworks") {
+    const headerKey = codexChatgptLoginFireworksKey(provider);
+    if (headerKey) {
+      return headerKey;
+    }
+  }
   if (variant === "azure" && provider.env_key === AZURE_API_KEY_ENV) {
     return CODEX_AZURE_API_KEY_ENV_REF;
   }
@@ -216,15 +254,6 @@ export function codexAuthKeyMode(storedRef) {
     return "env-reference";
   }
   return "literal";
-}
-
-/**
- * @param {{ root: Record<string, unknown>, tables: Record<string, Record<string, unknown>> }} doc
- */
-export function codexLiteralAuthFromDoc(doc) {
-  const provider = doc.tables[CODEX_PROVIDER_TABLE];
-  return typeof provider?.experimental_bearer_token === "string"
-    && provider.experimental_bearer_token.trim().length > 0;
 }
 
 /**
@@ -430,7 +459,7 @@ export async function enableCodexFireworks({
   catalog = null,
   catalogSnapshot = null,
   catalogAvailable = false,
-  envHttpHeaders = {},
+  refreshCatalog = false,
   telemetryHeaders = {},
 }) {
   const resolvedEffective = effectiveApiKey
@@ -494,8 +523,10 @@ export async function enableCodexFireworks({
     const managedCatalog = snapshotReferencesFireworksCatalog(snapshot.raw)
       ? existingCatalog
       : null;
+    // An explicit --model keeps the existing rows; `refreshCatalog` marks a
+    // model FireConnect chose itself (re-`on` or the FireRouter default).
     const models = managedCatalog
-      ? (modelId
+      ? (modelId && !refreshCatalog
           ? managedCatalog.models
           : catalogAvailable
             ? refreshCodexCatalogRows(managedCatalog.models, catalogSnapshot, catalog.models ?? [])
@@ -507,9 +538,9 @@ export async function enableCodexFireworks({
       : (catalog.models ?? []);
     const catalogToWrite = {
       ...(managedCatalog ?? catalog),
-      models: modelId
+      models: withCodexConstantFields(withCodexSignInRows(modelId
         ? addCodexSelectedModel(models, catalog, storedModel)
-        : models,
+        : models)),
     };
     if ((managedCatalog || catalogToWrite.models.length > 0)
       && (!managedCatalog
@@ -528,14 +559,14 @@ export async function enableCodexFireworks({
   ) {
     const existingCatalog = await readCodexCatalogIfValid(catalogPath);
     const models = existingCatalog?.models ?? [];
-    const nextModels = modelId
+    const nextModels = withCodexConstantFields(withCodexSignInRows(modelId
       ? addCodexSelectedModel(models, null, storedModel)
-      : models;
+      : models));
     const catalogToWrite = {
       ...(existingCatalog ?? {}),
       models: nextModels,
     };
-    if (nextModels !== models) {
+    if (JSON.stringify(nextModels) !== JSON.stringify(models)) {
       await writeCodexCatalogFile(catalogPath, catalogToWrite);
     }
     if (catalogToWrite && codexCatalogContainsModel(catalogToWrite, storedModel)) {
@@ -544,21 +575,15 @@ export async function enableCodexFireworks({
   }
 
   const providerTable = doc.tables[CODEX_PROVIDER_TABLE] ?? {};
-  const priorHttpHeaders = providerTable.http_headers
-    && typeof providerTable.http_headers === "object"
-    ? providerTable.http_headers
-    : {};
-  const priorEnvHeaders = providerTable.env_http_headers
-    && typeof providerTable.env_http_headers === "object"
-    ? providerTable.env_http_headers
-    : {};
-  const byokHeaderNames = new Set(["x-anthropic-api-key", "x-openai-api-key"]);
-  const preservedEnvHeaders = Object.fromEntries(
-    Object.entries(priorEnvHeaders).filter(
-      ([name]) => !byokHeaderNames.has(name.toLowerCase()),
-    ),
+  const removedProviderKeys = Boolean(
+    omitHeaders(providerTable.http_headers, CODEX_PROVIDER_KEY_HEADERS)
+      || omitHeaders(providerTable.env_http_headers, CODEX_PROVIDER_KEY_HEADERS),
   );
-
+  const httpHeaders = mergeFireconnectTelemetryHeaders(
+    withoutHeaders(providerTable.http_headers, CODEX_PROVIDER_KEY_HEADERS),
+    telemetryHeaders,
+  );
+  const envHttpHeaders = withoutHeaders(providerTable.env_http_headers, CODEX_PROVIDER_KEY_HEADERS);
   const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, {
     providerId: CODEX_FIREWORKS_PROVIDER_ID,
     baseUrl: CODEX_FIREWORKS_BASE_URL,
@@ -566,11 +591,9 @@ export async function enableCodexFireworks({
     catalogPath: effectiveCatalogPath,
     apiKey: resolvedEffective,
     literalAuth: true,
-    httpHeaders: mergeFireconnectTelemetryHeaders(
-      priorHttpHeaders,
-      telemetryHeaders,
-    ),
-    envHttpHeaders: { ...preservedEnvHeaders, ...envHttpHeaders },
+    chatgptLogin: true,
+    httpHeaders: withChatgptLoginFireworksKey(httpHeaders, resolvedEffective),
+    envHttpHeaders,
   });
   await mkdir(path.dirname(configPath), { recursive: true });
   if (nextRaw !== snapshot.raw) {
@@ -585,6 +608,7 @@ export async function enableCodexFireworks({
     keyType: resolvedKeyType,
     apiKeyMode: "literal",
     catalogWritten,
+    removedProviderKeys,
   };
 }
 
@@ -606,6 +630,20 @@ export async function refreshCodexGatewayKey({ configPath, fireworksKey }) {
     return false;
   }
   const stored = codexStoredAuthRef(doc);
+  const provider = doc.tables[CODEX_PROVIDER_TABLE];
+  if (codexChatgptLoginFireworksKey(provider)) {
+    if (stored === key) {
+      return false;
+    }
+    const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, {
+      apiKey: key,
+      literalAuth: true,
+      chatgptLogin: true,
+      httpHeaders: withChatgptLoginFireworksKey(provider.http_headers, key),
+    });
+    await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
+    return true;
+  }
   const mode = codexAuthKeyMode(stored);
   if (mode === "env-reference") {
     const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, { apiKey: key, literalAuth: true });
@@ -618,87 +656,6 @@ export async function refreshCodexGatewayKey({ configPath, fireworksKey }) {
   const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, { apiKey: key, literalAuth: true });
   await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
   return true;
-}
-
-/**
- * Route Codex through Fireworks models served on Microsoft Foundry (Azure).
- * Writes a distinct `[model_providers.fireworks-azure]` table pointed at the
- * Foundry resource's OpenAI-compatible base with `wire_api = "chat"`,
- * authenticated by an Azure key (literal bearer when --api-key, otherwise the
- * `env_key = "AZURE_API_KEY"` reference). No Fireworks catalog is written —
- * Foundry deployment names are used verbatim.
- *
- * @param {{
- *   configPath: string,
- *   dataDir: string,
- *   apiKey: string,
- *   apiKeyFromFlag?: boolean,
- *   baseUrl: string,
- *   modelId?: string,
- * }} args
- */
-export async function enableCodexAzure({
-  configPath,
-  dataDir,
-  apiKey,
-  apiKeyFromFlag = false,
-  baseUrl,
-  modelId = "",
-}) {
-  const normalizedBaseUrl = normalizeAzureBaseUrl(baseUrl);
-  if (!normalizedBaseUrl) {
-    throw new Error(MISSING_AZURE_BASE_URL_MESSAGE);
-  }
-  const effectiveApiKey = apiKey === CODEX_AZURE_API_KEY_ENV_REF
-    ? (process.env[AZURE_API_KEY_ENV] ?? "")
-    : apiKey;
-  if (!effectiveApiKey) {
-    throw new Error(MISSING_AZURE_API_KEY_MESSAGE);
-  }
-
-  const snapshot = await readRawIfExists(configPath);
-  const doc = snapshot.existed && snapshot.raw.trim()
-    ? readTomlDoc(snapshot.raw)
-    : emptyTomlDoc();
-
-  // Only reuse an existing model when it's already an Azure deployment name.
-  // Switching from the Fireworks gateway must not carry over a gateway catalog
-  // id (e.g. glm-5p1) — Foundry has no such deployment.
-  const currentAzureModel = fireconnectManagedVariant(doc) === "azure"
-    ? codexCurrentModelId(doc)
-    : "";
-  const resolvedModel = modelId || currentAzureModel || DEFAULT_AZURE_MODEL;
-
-  const backupPath = codexBackupPath(dataDir, configPath);
-  const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
-  const shouldSnapshot = !hasBackup && !fireconnectManaged(doc);
-  if (shouldSnapshot) {
-    await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
-    await writeJson(backupPath, { configPath: path.resolve(configPath), snapshot });
-    await chmod(backupPath, 0o600);
-  }
-
-  const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, {
-    providerId: CODEX_AZURE_PROVIDER_ID,
-    baseUrl: normalizedBaseUrl,
-    modelId: resolvedModel,
-    apiKey: effectiveApiKey,
-    literalAuth: apiKeyFromFlag,
-    wireApi: "chat",
-    providerName: AZURE_PROVIDER_LABEL,
-    authEnvKey: AZURE_API_KEY_ENV,
-  });
-  await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFileAtomic(configPath, nextRaw);
-  if (apiKeyFromFlag) {
-    await chmod(configPath, 0o600);
-  }
-
-  return {
-    model: resolvedModel,
-    baseUrl: normalizedBaseUrl,
-    apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference",
-  };
 }
 
 export async function disableCodexFireworks({ configPath, dataDir, catalogPath = "", wasEnabled = false }) {

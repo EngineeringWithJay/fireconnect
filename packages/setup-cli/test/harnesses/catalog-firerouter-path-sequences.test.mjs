@@ -11,7 +11,6 @@ import { isFireconnectProvider } from "../../lib/harnesses/vscode/core.mjs";
 import { runFireconnect, withTempHome } from "../helpers.mjs";
 
 const API_KEY = "fw_cataloged_v1_adversarial000000";
-const ANTHROPIC_KEY = "sk-ant-catalog-firerouter-astra-0000";
 const FIREROUTER_TEST_PATH = "firerouter/test-model";
 const NO_ENV = { FIREWORKS_API_KEY: "" };
 
@@ -28,26 +27,24 @@ async function runFirerouterPathSequence(home, harness, modelArgs = ["--model", 
 }
 
 describe("FireRouter path catalog sequences across harnesses", () => {
-  it("codex: switching to bare firerouter keeps the path catalog row", async () => {
+  it("codex: --model firerouter lands on the FireRouter row and keeps the path catalog row", async () => {
     await withTempHome("seq-codex-bare-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });
       await runFirerouterPathSequence(home, "codex");
       const bare = await runFireconnect(
-        [
-          "codex", "on", "--api-key", API_KEY,
-          "--model", "firerouter", "--anthropic-api-key", ANTHROPIC_KEY,
-        ],
+        ["codex", "on", "--api-key", API_KEY, "--model", "firerouter"],
         { HOME: home, ...NO_ENV },
       );
       assert.equal(bare.code, 0, bare.stderr);
 
       const config = await readFile(codexConfigPath(home), "utf8");
-      assert.match(config, /model = "firerouter"/);
+      assert.match(config, /^model = "firerouter\/astra"$/m);
       const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8"))
         .models
         .map((row) => row.slug);
       assert.ok(slugs.includes(FIREROUTER_TEST_PATH), "prior compound row not dropped");
-      assert.ok(slugs.includes("firerouter"));
+      assert.ok(slugs.includes("firerouter/astra"));
+      assert.ok(!slugs.includes("firerouter"));
     });
   });
 

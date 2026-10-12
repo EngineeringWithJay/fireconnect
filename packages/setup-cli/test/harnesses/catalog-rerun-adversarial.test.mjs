@@ -70,6 +70,35 @@ describe("catalog rerun adversarial scenarios", () => {
     });
   });
 
+  it("codex plain on keeps a FireRouter route and still refreshes the catalog", async () => {
+    for (const route of ["", "firerouter/opus"]) {
+      await withTempHome("adv-codex-firerouter-refresh-", async (home) => {
+        await mkdir(path.join(home, ".codex"), { recursive: true });
+        const first = await runFireconnect(
+          ["codex", "on", "--api-key", V1_KEY, ...(route ? ["--model", route] : [])],
+          { HOME: home, ...NO_ENV },
+        );
+        assert.equal(first.code, 0, first.stderr);
+        const catalogPath = codexCatalogPath(home);
+        const before = JSON.parse(await readFile(catalogPath, "utf8"));
+        before.models.push({ slug: "retired-user-model", display_name: "Retired", context_window: 1000, max_context_window: 1000 });
+        await writeFile(catalogPath, `${JSON.stringify(before, null, 2)}\n`);
+
+        clearCatalogCacheForHome(home);
+        const rerun = await runFireconnect(["codex", "on", "--api-key", V2_KEY], { HOME: home, ...NO_ENV });
+        assert.equal(rerun.code, 0, rerun.stderr);
+
+        const expected = route || "firerouter/astra";
+        assert.match(await readFile(codexConfigPath(home), "utf8"), new RegExp(`^model = "${expected}"$`, "m"));
+        const slugs = JSON.parse(await readFile(catalogPath, "utf8")).models.map((row) => row.slug);
+        assert.ok(slugs.includes(expected), `${expected}: ${slugs.join(",")}`);
+        assert.ok(slugs.includes("glm-latest"), `${expected}: new v2 model is added`);
+        assert.ok(!slugs.includes("retired-user-model"), `${expected}: row missing from serverless is dropped`);
+        assert.equal(slugs.length, new Set(slugs).size, "no duplicate rows");
+      });
+    }
+  });
+
   it("codex preserves a FireRouter path and catalog ref on re-on without --model", async () => {
     await withTempHome("adv-codex-firerouter-path-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });

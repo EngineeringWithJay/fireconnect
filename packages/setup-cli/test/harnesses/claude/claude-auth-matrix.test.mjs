@@ -114,10 +114,8 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         const settings = JSON.parse(await readFile(settingsPath, "utf8"));
         const headers = settings.env.ANTHROPIC_CUSTOM_HEADERS;
         assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_BASE_URL);
-        assert.equal(
-          settings.env.ANTHROPIC_API_KEY,
-          scenario.byok ? ANTHROPIC_KEY : undefined,
-        );
+        // A saved Anthropic key is for other harnesses; Claude Code signs in on its own.
+        assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
         assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
         assertClaudeMainModel(settings, FIREROUTER_MODEL);
         if (scenario.firerouter) {

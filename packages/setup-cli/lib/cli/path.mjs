@@ -31,26 +31,12 @@ export function resolveFireconnectCliPath(home = process.env.HOME ?? "") {
  * @param {string} [home]
  */
 export function fireconnectKeyExportCommand(home = process.env.HOME ?? "") {
-  return fireconnectExportCommand(home, { anthropic: false });
-}
-
-export function fireconnectAnthropicKeyExportCommand(home = process.env.HOME ?? "") {
-  return fireconnectExportCommand(home, { anthropic: true, openai: false });
-}
-
-export function fireconnectOpenaiKeyExportCommand(home = process.env.HOME ?? "") {
-  return fireconnectExportCommand(home, { anthropic: false, openai: true });
-}
-
-function fireconnectExportCommand(home, { anthropic, openai }) {
   const cliPath = resolveFireconnectCliPath(home);
   const homeFlag = home ? ` --home ${shellQuote(home)}` : "";
-  const storedFlag = " --stored-only";
-  const familyFlag = anthropic ? " --anthropic" : openai ? " --openai" : "";
   if (cliPath.endsWith(".mjs")) {
-    return `${process.execPath} ${shellQuote(cliPath)}${homeFlag} key export${storedFlag}${familyFlag}`;
+    return `${process.execPath} ${shellQuote(cliPath)}${homeFlag} key export --stored-only`;
   }
-  return `${shellQuote(cliPath)}${homeFlag} key export${storedFlag}${familyFlag}`;
+  return `${shellQuote(cliPath)}${homeFlag} key export --stored-only`;
 }
 
 /** @param {string} p */

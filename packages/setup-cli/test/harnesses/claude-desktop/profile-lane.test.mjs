@@ -611,6 +611,29 @@ test("shim forwards requests carrying hop-by-hop headers instead of 502ing", asy
   }
 });
 
+test("shim reports an unreachable upstream as a 502 with its cause, not a timeout", async () => {
+  const closed = http.createServer();
+  await new Promise((r) => closed.listen(0, "127.0.0.1", r));
+  const deadPort = closed.address().port;
+  await new Promise((r) => closed.close(r));
+  const catalogDir = await mkdtemp(path.join(tmpdir(), "fc-shim-catalog-"));
+  const logs = [];
+  const server = createShimServer({ modelMap: DEFAULT_MODEL_MAP, catalogDir, upstreamOrigin: `http://127.0.0.1:${deadPort}`, log: (line) => logs.push(line) });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/v1/messages`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-opus-4-8", messages: [] }),
+    });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error.message, /Could not reach Fireworks: ECONNREFUSED/);
+    assert.ok(logs.some((line) => /upstream error .*ECONNREFUSED/.test(line)));
+  } finally {
+    await new Promise((r) => server.close(r));
+    await rm(catalogDir, { recursive: true, force: true });
+  }
+});
+
 test("secret-bearing profile files are written owner-only (0600)", async () => {
   const { stat } = await import("node:fs/promises");
   const { home, cleanup } = await tempHome();

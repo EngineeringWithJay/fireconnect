@@ -5,6 +5,7 @@ import process from "node:process";
 import {
   SHIM_AGENT_LABEL,
   buildLaunchAgentPlist,
+  shimTrustOptions,
   startLaunchAgent,
   stopLaunchAgent,
 } from "../../../lib/harnesses/claude-desktop/platform.mjs";
@@ -56,6 +57,29 @@ test("launchd plist is deterministic, escaped, and owned by our label", () => {
   // removed lane never respawns.
   assert.ok(plist.includes("<key>KeepAlive</key><true/>"));
   assert.ok(!plist.includes("FIREWORKS"), "no credentials in the plist");
+});
+
+test("shim trusts the system CA store and an explicit extra CA bundle (TLS-inspecting proxies)", () => {
+  const trust = shimTrustOptions(
+    { NODE_EXTRA_CA_CERTS: "/Library/Zscaler <root>.pem", FIREWORKS_API_KEY: "fw_secret" },
+    new Set(["--use-system-ca"]),
+  );
+  assert.deepEqual(trust, {
+    nodeArgs: ["--use-system-ca"],
+    env: { NODE_EXTRA_CA_CERTS: "/Library/Zscaler <root>.pem" },
+  });
+  const plist = buildLaunchAgentPlist({
+    nodeExec: "/usr/local/bin/node", entry: "/tmp/shim.mjs", home: "/Users/test",
+    logPath: "/tmp/log", errorPath: "/tmp/err", ...trust,
+  });
+  assert.match(plist, /<string>\/usr\/local\/bin\/node<\/string>\s*<string>--use-system-ca<\/string>\s*<string>\/tmp\/shim\.mjs<\/string>/);
+  assert.ok(plist.includes("<key>NODE_EXTRA_CA_CERTS</key><string>/Library/Zscaler &lt;root&gt;.pem</string>"));
+  assert.ok(plist.includes("<key>HOME</key><string>/Users/test</string>"));
+  assert.ok(!plist.includes("fw_secret"), "only the CA path is carried over");
+});
+
+test("shim omits --use-system-ca on a Node that would reject it", () => {
+  assert.deepEqual(shimTrustOptions({}, new Set()), { nodeArgs: [], env: {} });
 });
 
 test("startLaunchAgent reloads an already-loaded agent with the current plist", withoutTestGate(async () => {

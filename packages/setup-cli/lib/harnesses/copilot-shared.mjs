@@ -26,8 +26,8 @@ export const COPILOT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1
  * This is the shared ladder vocabulary ({@link ALL_REASONING_EFFORTS}), not a
  * per-model ladder: all four levels were probed against the gateway per model
  * and every one returns HTTP 200 on every model FireConnect registers. `max`
- * matters — it is the GLM and Kimi default, so omitting it would hide each
- * model's strongest setting. For a per-model ladder (e.g. to hide `max` where
+ * matters — it is each model's strongest setting, so omitting it would hide a
+ * level the gateway accepts. For a per-model ladder (e.g. to hide `max` where
  * it is unsupported), use `reasoningEffortNamesFor` from
  * `../fireworks/reasoning.mjs` — but only after probing, since narrowing this
  * list removes a level the gateway would have accepted.

@@ -80,28 +80,6 @@ describe("shell-env-hook", () => {
     }
   });
 
-  it("exports a configured Anthropic key for Codex BYOK", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-anthropic-"));
-    process.env.HOME = home;
-    process.env.SHELL = "/bin/zsh";
-    try {
-      await seedKeychainConfig(home, "fw_test_key_12345");
-      await writeGlobalConfig(home, {
-        apiKey: "{keychain:fireworks-api-key}",
-        anthropicApiKey: "sk-ant-stored",
-        harnesses: { codex: { enabled: true } },
-      });
-
-      const shellPath = await reconcileShellEnvHook(home);
-      const raw = await readFile(shellPath, "utf8");
-      assert.match(raw, /export ANTHROPIC_API_KEY="\$\(/);
-      assert.match(raw, /key export --stored-only --anthropic/);
-      assert.doesNotMatch(raw, /sk-ant-stored/);
-    } finally {
-      await rm(home, { recursive: true, force: true });
-    }
-  });
-
   it("reconcileShellEnvHook skips FIREWORKS export for legacy env-ref harness configs alone", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-legacy-envref-"));
     process.env.HOME = home;
@@ -181,40 +159,6 @@ describe("shell-env-hook", () => {
 
       assert.equal(await reconcileShellEnvHook(home), null);
       assert.doesNotMatch(await readFile(path.join(home, ".zshrc"), "utf8"), /fireconnect/);
-    } finally {
-      await rm(home, { recursive: true, force: true });
-    }
-  });
-
-  it("reconcileShellEnvHook keeps anthropic export when codex BYOK remains", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-sync-off-refresh-"));
-    process.env.HOME = home;
-    process.env.SHELL = "/bin/zsh";
-    try {
-      await seedKeychainConfig(home, "fw_test_key_12345");
-      await writeGlobalConfig(home, {
-        apiKey: "{keychain:fireworks-api-key}",
-        anthropicApiKey: "sk-ant-stored",
-        harnesses: {
-          codex: { enabled: true },
-          opencode: { enabled: true },
-        },
-      });
-      await reconcileShellEnvHook(home);
-
-      await writeGlobalConfig(home, {
-        apiKey: "{keychain:fireworks-api-key}",
-        anthropicApiKey: "sk-ant-stored",
-        harnesses: {
-          codex: { enabled: true },
-          opencode: { enabled: false },
-        },
-      });
-      assert.ok(await reconcileShellEnvHook(home));
-
-      const raw = await readFile(path.join(home, ".zshrc"), "utf8");
-      assert.doesNotMatch(raw, /export FIREWORKS_API_KEY=/);
-      assert.match(raw, /export ANTHROPIC_API_KEY=/);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

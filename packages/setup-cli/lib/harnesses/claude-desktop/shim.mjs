@@ -262,8 +262,14 @@ export function createShimServer({
         });
       } catch (error) {
         clearTimeout(timer);
-        log(`[fireconnect-shim] upstream ${error.name === "AbortError" ? "timeout" : "error"} for ${req.method} ${url.pathname}`);
-        return reply(res, 504, { error: { type: "timeout_error", message: "Upstream timed out." } });
+        if (error.name === "AbortError") {
+          log(`[fireconnect-shim] upstream timeout for ${req.method} ${url.pathname}`);
+          return reply(res, 504, { error: { type: "timeout_error", message: "Upstream timed out." } });
+        }
+        // Surface the code: a TLS-inspecting proxy shows up as a cert error here.
+        const cause = error.cause?.code ?? error.cause?.message ?? error.message;
+        log(`[fireconnect-shim] upstream error for ${req.method} ${url.pathname}: ${cause}`);
+        return reply(res, 502, { error: { type: "api_error", message: `Could not reach Fireworks: ${cause}` } });
       }
       clearTimeout(timer);
       log(`[fireconnect-shim] upstream ${upstream.status} for ${req.method} ${url.pathname}${toolSummary ? ` ${toolSummary}` : ""}`);

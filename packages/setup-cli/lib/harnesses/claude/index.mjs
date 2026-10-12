@@ -83,9 +83,7 @@ import {
 import { HARNESS } from "../../harness/id.mjs";
 import {
   fireworksKeyFromCustomHeaders,
-  isAnthropicShapedKey,
   isOpenAIShapedKey,
-  resolveAnthropicKey,
   resolveOpenaiKey,
   routingPreferenceFromCustomHeaders,
   routingPreferenceLevelLabel,
@@ -134,10 +132,15 @@ const CLAUDE_FIREROUTER = Object.freeze({
   byok: "none",
   autoCatalog: true,
   routingPreference: true,
-  // `--anthropic-api-key` stays accepted on `claude on` for optional native
-  // auth (never FireRouter BYOK) — see supportsAnthropicApiKeyFlag.
-  nativeAnthropicKey: true,
+  // Claude Code's own sign-in pays for Claude turns; FireConnect only carries
+  // an OpenAI key, in ANTHROPIC_CUSTOM_HEADERS.
+  customHeaderOpenaiKey: true,
 });
+
+export const CLAUDE_ANTHROPIC_KEY_REMOVED_NOTE =
+  "FireConnect no longer writes an Anthropic key into Claude Code's settings, so it removed the "
+  + "one an earlier `fireconnect claude` saved. Claude Code's own sign-in pays for Claude turns: "
+  + "run `claude login`, or export ANTHROPIC_API_KEY to pay with a key.";
 
 export const CLAUDE_LEGACY_ANTHROPIC_MODEL_WARNING =
   "Legacy env.ANTHROPIC_MODEL is still set and overrides Claude Code's /model picker. "
@@ -249,11 +252,11 @@ export function claudeNativeAuthBaseline(settings, backup = {}, state = {}, inte
   return { ...baseline, env };
 }
 
-async function resolveClaudeNativeAuth({
-  ctx,
-  baseline,
-  state,
-}) {
+/**
+ * The Anthropic credentials Claude Code had before FireConnect. FireConnect
+ * never adds one: Claude Code's own sign-in pays for Claude turns.
+ */
+function resolveClaudeNativeAuth({ baseline, state }) {
   const baselineEnv = baseline.env ?? {};
   const anthropicApiKey = isNativeClaudeCredential(baselineEnv.ANTHROPIC_API_KEY)
     ? baselineEnv.ANTHROPIC_API_KEY.trim()
@@ -265,28 +268,7 @@ async function resolveClaudeNativeAuth({
   const nativeApiKeyHelper = Object.hasOwn(helperResult, "apiKeyHelper")
     ? helperResult.apiKeyHelper
     : null;
-  const resolvedAnthropicKey = await resolveAnthropicKey({
-    apiKey: ctx.anthropicKeyFromFlag ? ctx.anthropicKey : "",
-    settingsEnv: {
-      ...(anthropicApiKey ? { ANTHROPIC_API_KEY: anthropicApiKey } : {}),
-      ...(anthropicAuthToken ? { ANTHROPIC_AUTH_TOKEN: anthropicAuthToken } : {}),
-    },
-    home: ctx.home,
-  });
-  const resolvedOnlyFromAuthToken = !ctx.anthropicKeyFromFlag
-    && !anthropicApiKey
-    && Boolean(anthropicAuthToken)
-    && resolvedAnthropicKey === anthropicAuthToken;
-
-  return {
-    anthropicApiKey: resolvedOnlyFromAuthToken
-      ? ""
-      : (resolvedAnthropicKey || anthropicApiKey),
-    anthropicAuthToken,
-    nativeApiKeyHelper,
-    hasNativeAuth: Boolean(resolvedAnthropicKey)
-      || Boolean(nativeApiKeyHelper),
-  };
+  return { anthropicApiKey, anthropicAuthToken, nativeApiKeyHelper };
 }
 
 /**
@@ -400,9 +382,6 @@ export default defineHarnessProfile({
       snapshot.backup,
     );
     const fireworksKey = await claudeApiKeyForOn(ctx, snapshot);
-    if (ctx.anthropicKeyFromFlag && !isAnthropicShapedKey(ctx.anthropicKey)) {
-      throw new Error("--anthropic-api-key must be an Anthropic API key (sk-ant-...).");
-    }
     if (ctx.openaiKeyFromFlag && !isOpenAIShapedKey(ctx.openaiKey)) {
       throw new Error("--openai-api-key must be an OpenAI API key (sk-..., not sk-ant-...).");
     }
@@ -440,12 +419,13 @@ export default defineHarnessProfile({
       snapshot.state,
       snapshot.intent,
     );
-    const nativeAuth = await resolveClaudeNativeAuth({
-      ctx,
+    const nativeAuth = resolveClaudeNativeAuth({
       baseline: nativeBaseline,
       state: snapshot.state,
     });
-    const hasConfirmedFirerouterAuth = nativeAuth.hasNativeAuth;
+    const currentAnthropicKey = snapshot.settings.env?.ANTHROPIC_API_KEY?.trim() ?? "";
+    const removedAnthropicKey = isNativeClaudeCredential(currentAnthropicKey)
+      && currentAnthropicKey !== nativeAuth.anthropicApiKey;
     // Claude Code keeps its own OAuth/subscription login and attaches Anthropic
     // auth at request time. FireConnect does not probe for that login — only
     // Fire Pass is ineligible for FireRouter.
@@ -588,6 +568,9 @@ export default defineHarnessProfile({
     );
     if (visionWarning) {
       footnotes.push(() => printNote(visionWarning));
+    }
+    if (removedAnthropicKey) {
+      footnotes.push(() => printNote(CLAUDE_ANTHROPIC_KEY_REMOVED_NOTE));
     }
     await reconcileServerToolDenials(settingsPath, preserveDeniedServerTools);
     await approveStrayAnthropicApiKey(ctx.home);

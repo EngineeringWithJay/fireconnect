@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { describe, it } from "node:test";
@@ -15,7 +16,7 @@ import {
   fireworksModelDisplayFields,
 } from "../../../lib/harnesses/claude/picker-labels.mjs";
 import { resolveClaudeAuthState } from "../../../lib/harnesses/claude/index.mjs";
-import { readGlobalConfig } from "../../../lib/config/global-config.mjs";
+import { readGlobalConfig, writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 import {
   WEBSEARCH_MCP_SERVER_NAME,
   WEBSEARCH_MCP_URL,
@@ -328,7 +329,7 @@ describe("claude harness integration", () => {
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
   });
 
-  it("--anthropic-api-key alone becomes native auth and selects the fresh FireRouter default", async () => {
+  it("refuses --anthropic-api-key: Claude Code's own sign-in pays for Claude turns", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-anthropic-flag-"));
     const result = await runFireconnect(
       [
@@ -336,20 +337,54 @@ describe("claude harness integration", () => {
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "sk-ant-native-flag",
       ],
-      {
-        HOME: home,
-        FIREWORKS_API_KEY: "",
-        ANTHROPIC_API_KEY: "",
-        ANTHROPIC_AUTH_TOKEN: "",
-      },
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
+    );
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Claude Code pays for Claude turns with its own sign-in/);
+    assert.match(result.stderr, /claude login/);
+    assert.equal(existsSync(userSettingsPath(home)), false);
+    assert.equal((await readGlobalConfig(home)).anthropicApiKey, "");
+  });
+
+  it("never writes a saved or exported Anthropic key into Claude's settings", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-anthropic-saved-"));
+    await writeGlobalConfig(home, { anthropicApiKey: "sk-ant-saved-0000" });
+    const result = await runFireconnect(
+      ["claude", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-exported-0000", ANTHROPIC_AUTH_TOKEN: "" },
     );
     assert.equal(result.code, 0, result.stderr);
+    const raw = await readFile(userSettingsPath(home), "utf8");
+    assert.doesNotMatch(raw, /sk-ant-saved-0000|sk-ant-exported-0000/);
+    assert.equal(JSON.parse(raw).model, "firerouter[1m]");
+  });
 
-    const enabled = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-native-flag");
-    assert.equal(enabled.model, "firerouter[1m]");
-    assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
-    assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
+  it("a re-on removes an Anthropic key an earlier on wrote, says so once, and off restores the original", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-anthropic-removed-"));
+    const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+    const settingsPath = userSettingsPath(home);
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    const original = '{"theme":"dark"}\n';
+    await writeFile(settingsPath, original);
+    const on = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+    assert.equal(on.code, 0, on.stderr);
+    const legacy = JSON.parse(await readFile(settingsPath, "utf8"));
+    legacy.env.ANTHROPIC_API_KEY = "sk-ant-written-by-old-on";
+    await writeFile(settingsPath, JSON.stringify(legacy, null, 2));
+
+    const reOn = await runFireconnect(["claude", "on"], env);
+    assert.equal(reOn.code, 0, reOn.stderr);
+    assert.match(reOn.stdout, /removed the one an earlier `fireconnect claude` saved/);
+    assert.match(reOn.stdout, /claude login/);
+    assert.doesNotMatch(await readFile(settingsPath, "utf8"), /sk-ant-written-by-old-on/);
+
+    const again = await runFireconnect(["claude", "on"], env);
+    assert.equal(again.code, 0, again.stderr);
+    assert.doesNotMatch(again.stdout, /removed the one an earlier/);
+
+    const off = await runFireconnect(["claude", "off"], env);
+    assert.equal(off.code, 0, off.stderr);
+    assert.equal(await readFile(settingsPath, "utf8"), original);
   });
 
   it("missing Fireworks auth stops before settings changes with login and custom SSO guidance", async () => {
@@ -360,7 +395,7 @@ describe("claude harness integration", () => {
     await writeFile(settingsPath, original);
 
     const result = await runFireconnect(
-      ["claude", "on", "--anthropic-api-key", "sk-ant-must-not-persist"],
+      ["claude", "on"],
       {
         HOME: home,
         FIREWORKS_API_KEY: "",
@@ -401,7 +436,6 @@ describe("claude harness integration", () => {
         "claude", "on",
         "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
-        "--anthropic-api-key", "sk-ant-tools-test",
       ],
     ]) {
       const on = await runFireconnect(args, {

@@ -30,7 +30,7 @@ const RETIRED_FLAG_MESSAGES = {};
 const KNOWN_FLAGS = [
   "--help", "--version", "--json", "--home", "--settings-path", "--config-path",
   "--data-dir", "--api-key", "--base-url", "--azure", "--provider",
-  "--anthropic-api-key", "--openai-api-key", "--model", "--opus",
+  "--anthropic-api-key", "--openai-api-key", "--unset", "--model", "--opus",
   "--sonnet", "--haiku", "--fable", "--subagent", "--search", "--refresh",
   "--db-path", "--vscode-path", "--providers-path", "--force", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
@@ -79,6 +79,8 @@ export function createBaseContext() {
     anthropicKeyFromFlag: false,
     openaiKey: "",
     openaiKeyFromFlag: false,
+    unsetAnthropicKey: false,
+    unsetOpenaiKey: false,
     anthropic: false,
     openai: false,
     main: "",
@@ -171,6 +173,13 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--revoke": ctx.revoke = true; return false;
     case "--anthropic": ctx.anthropic = true; return false;
     case "--openai": ctx.openai = true; return false;
+    case "--unset": {
+      const key = requireValue(arg, next);
+      if (key === "anthropic-api-key") ctx.unsetAnthropicKey = true;
+      else if (key === "openai-api-key") ctx.unsetOpenaiKey = true;
+      else throw new Error(`--unset takes anthropic-api-key or openai-api-key, not ${key}.`);
+      return true;
+    }
     case "--interactive":
       if (ctx.onboardingMode === "skip") {
         throw new Error("--interactive and --non-interactive cannot be used together");

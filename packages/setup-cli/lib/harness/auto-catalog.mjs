@@ -63,6 +63,7 @@ import {
   opencodeProviderModelKey,
   opencodeProviderStatus,
   readRawIfExists,
+  writeOpencodeConfig,
 } from "../harnesses/opencode/core.mjs";
 import {
   piProviderStatus,
@@ -167,6 +168,10 @@ async function ensureOpencodeAuto(home) {
   if (opencodeProviderStatus(config) !== "fireworks") {
     return false;
   }
+  // Creating provider["fireworks-ai"] would claim a native v2 entry the user owns.
+  if (!config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] && config.providers?.[OPENCODE_FIREWORKS_PROVIDER_ID]) {
+    return false;
+  }
   const provider = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
   const models = { ...(provider.models ?? {}) };
   if (Object.keys(models).some((id) => opencodeProviderModelKey(id) === "auto")) {
@@ -175,7 +180,8 @@ async function ensureOpencodeAuto(home) {
   if (isFirepassKey(effectiveOpencodeApiKey(provider.options?.apiKey))) {
     return false;
   }
-  const next = {
+  const storedApiKey = provider.options?.apiKey;
+  await writeOpencodeConfig(resolvedPath, {
     ...config,
     provider: {
       ...config.provider,
@@ -184,11 +190,7 @@ async function ensureOpencodeAuto(home) {
         models: { auto: buildOpencodeModelEntry("auto"), ...models },
       },
     },
-  };
-  const storedApiKey = provider.options?.apiKey;
-  await writeJson(resolvedPath, next, {
-    mode: typeof storedApiKey === "string" && storedApiKey ? 0o600 : undefined,
-  });
+  }, { mode: typeof storedApiKey === "string" && storedApiKey ? 0o600 : undefined });
   return true;
 }
 

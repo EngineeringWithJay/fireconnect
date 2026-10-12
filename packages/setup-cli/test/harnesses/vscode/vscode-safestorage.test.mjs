@@ -16,8 +16,10 @@ import {
   linuxSafeStorageObfuscatedKeyNote,
   linuxSecretServiceReachable,
   linuxSecretToolOnPath,
+  linuxSecretUsesKeyringBackend,
   loadWindowsOsCryptKey,
   resetLinuxSafeStorageDetectionForTests,
+  storedSecretHasCiphertext,
   windowsAesGcmDecrypt,
   windowsAesGcmEncrypt,
 } from "../../../lib/harnesses/vscode/safestorage.mjs";
@@ -349,6 +351,33 @@ describe("vscode-safestorage Linux Secret Service detection", () => {
     } else {
       assert.equal(linuxEncryptUsesBasicTextBackend(v10), false);
       assert.equal(linuxEncryptUsesBasicTextBackend(v11), false);
+    }
+  });
+
+  it("linuxSecretUsesKeyringBackend detects v11 only", () => {
+    const v10 = JSON.stringify(aesEncrypt("x", "peanuts", "v10", 1));
+    const v11 = JSON.stringify(aesEncrypt("x", "keyring-pw", "v11", 1));
+    assert.equal(linuxSecretUsesKeyringBackend(v11), process.platform === "linux");
+    assert.equal(linuxSecretUsesKeyringBackend(v10), false);
+    assert.equal(linuxSecretUsesKeyringBackend(""), false);
+    assert.equal(linuxSecretUsesKeyringBackend(null), false);
+  });
+
+  it("storedSecretHasCiphertext separates real ciphertext from absent/cleared/garbage rows", () => {
+    const prev = process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT;
+    delete process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT;
+    try {
+      assert.equal(storedSecretHasCiphertext(JSON.stringify(aesEncrypt("x", "pw", "v11", 1))), true);
+      assert.equal(storedSecretHasCiphertext(JSON.stringify({ type: "Buffer", data: [] })), false);
+      assert.equal(storedSecretHasCiphertext(undefined), false);
+      assert.equal(storedSecretHasCiphertext(""), false);
+      assert.equal(storedSecretHasCiphertext("not json"), false);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT;
+      } else {
+        process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT = prev;
+      }
     }
   });
 

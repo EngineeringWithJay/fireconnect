@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "0.9.9",
+      "highlights": [
+        "Codex starts on FireRouter, and GPT turns run on your own sign-in. A fresh `fireconnect codex` picks `firerouter` and asks you to `codex login` with ChatGPT or an OpenAI key. Easy turns stay on open models, and the GPT models your sign-in offers sit right above the Fireworks catalog in `/model`. `fireconnect upgrade` switches existing setups over and keeps your model.",
+        "MCP servers and ChatGPT app connectors work in Codex. Their tools reach the model, so calls complete instead of the model saying a server \"exposes no tools\". `fireconnect upgrade` fixes existing setups.",
+        "Rotate your Fireworks key without breaking a harness. `fireconnect login` now saves the new key into every connected harness, VS Code included, even when you're already signed in. No more 401s from a harness holding the old key.",
+        "OpenCode v2 lists your Fireworks models. When `opencode.json` uses v2's `providers` map, FireConnect writes Fireworks there too, so `auto` and the rest show up in `/models` instead of silently going missing. `fireconnect upgrade` repairs existing setups."
+      ],
+      "improvements": [
+        "Fixed: OpenCode's `/models` no longer lists routers like `glm-latest` twice. `fireconnect upgrade` cleans up existing configs.",
+        "Fixed: Claude Desktop works behind TLS-inspecting corporate proxies such as Zscaler. Re-run `fireconnect claude-desktop on` to pick it up.",
+        "Fixed: with Node from fnm, `fireconnect` could stop finding Node in new or non-interactive shells. Re-run the installer once to fix an existing install.",
+        "New: `fireconnect configure --unset openai-api-key` and `--unset anthropic-api-key` clear a saved provider key from FireConnect and from every harness holding a copy.",
+        "Clearer errors: when the model catalog can't load, you see the gateway's actual answer instead of a generic \"reconnect to the network\".",
+        "Heads-up: Claude Code no longer takes `--anthropic-api-key`. Claude turns already use Claude Code's own sign-in (`claude login` or an exported `ANTHROPIC_API_KEY`), and your next `fireconnect claude` removes any key an earlier version saved.",
+        "Heads-up: Codex no longer supports Azure/Foundry, because Codex CLI 0.160 removed the only transport Foundry offers. Run `fireconnect configure --provider fireworks` to put Codex back on the Fireworks gateway. OpenCode, Pi, Cursor, and VS Code still support Foundry."
+      ],
+      "footer": "After upgrading, restart Codex and OpenCode. If Codex asks you to sign in, run `codex login`."
+    },
+    {
       "version": "0.9.8",
       "highlights": [
         "Claude Desktop runs on Fireworks. On macOS, `fireconnect claude-desktop on` routes Chat, Cowork, and Code through Fireworks, starting on `auto`. Bring your connectors along with `fireconnect claude-desktop mcp sync`, and `off` puts your previous setup back exactly as it was.",

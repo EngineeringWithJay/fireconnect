@@ -25,7 +25,7 @@ import { writeFileAtomic } from "../../io/atomic-write.mjs";
 import { printBody, printNote } from "../../cli/messages.mjs";
 import { claudeDesktopDataDir } from "./core.mjs";
 import {
-  SHIM_AGENT_LABEL, buildLaunchAgentPlist, startLaunchAgent, stopLaunchAgent,
+  SHIM_AGENT_LABEL, buildLaunchAgentPlist, shimTrustOptions, startLaunchAgent, stopLaunchAgent,
 } from "./platform.mjs";
 
 const SHIM_DEFAULT_PORT = 8799;
@@ -651,10 +651,10 @@ async function applyDeviceCatalogConfig(home, shimUrl) {
   delete config.modelCatalogEnabled;
   delete config.catalogUrl;
   // Default the picker to the 1M-context variant of the default model.
+  // Effort is deliberately left unset: new conversations use the Desktop
+  // app's own default, and a person's own choice per model still wins.
   config.modelPrefer1mContext = true;
-  // New conversations start at medium effort; a person's own choice per
-  // model is remembered and wins.
-  config.defaultModelEffort = "medium";
+  delete config.defaultModelEffort;
   await writeFileAtomic(configPath, JSON.stringify(config, null, 2));
 }
 
@@ -677,6 +677,9 @@ async function restoreDeviceCatalogConfig(home, saved) {
   await writeFileAtomic(configPath, JSON.stringify(config, null, 2));
 }
 
+// `defaultModelEffort` stays in the snapshot list so `off` restores a user's
+// pre-FireConnect value (and clears the key when they had none): `on` itself
+// never writes it — the Desktop app default applies while fireconnected.
 const DEVICE_CATALOG_KEYS = ["modelCatalogEnabled", "catalogUrl", "modelPrefer1mContext", "defaultModelEffort", "toolSearchEnabled"];
 
 async function waitForShim(port, timeoutMs = 10_000) {
@@ -761,6 +764,7 @@ export async function enableProfileLane(home, {
       nodeExec: process.execPath,
       entry,
       home,
+      ...shimTrustOptions(),
       label: SHIM_LABEL,
       logPath: path.join(dataDir, "shim.log"),
       errorPath: path.join(dataDir, "shim.err.log"),

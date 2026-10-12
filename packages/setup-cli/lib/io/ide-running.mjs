@@ -214,6 +214,8 @@ export function waitForEnterConfirm({
  *   now?: () => number,
  *   confirm?: typeof promptYesNo,
  *   prompt?: (opts: { signal: AbortSignal }) => Promise<void>,
+ *   instruction?: string,
+ *   stillRunningHint?: string,
  * }} [opts]
  */
 export async function ensureIdeStopped(spec, runningMessage, {
@@ -229,6 +231,10 @@ export async function ensureIdeStopped(spec, runningMessage, {
   now = Date.now,
   confirm = promptYesNo,
   prompt = ({ signal }) => waitForEnterConfirm({ stdin, stdout, signal }),
+  // How to stop the process, and the reminder when it outlives Enter. A GUI
+  // quits from its menu; a CLI session (Codex) is ended in its own terminal.
+  instruction = quitInstruction(label),
+  stillRunningHint = `Use ${fileQuitLabel()} (not just close the window)`,
 } = {}) {
   if (!isRunning()) {
     return;
@@ -241,7 +247,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     throw new Error(runningMessage);
   }
 
-  log(`${label} is running. ${quitInstruction(label)}, then press Enter — or just wait, I'll detect the exit.`);
+  log(`${label} is running. ${instruction}, then press Enter — or just wait, I'll detect the exit.`);
   log(`Ctrl-C cancels. Or re-run with --force to write while it's still open (not recommended).`);
 
   const deadline = now() + maxWaitMs;
@@ -249,7 +255,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     if (now() >= deadline) {
       log(
         `${label} still appears to be running after ${Math.round(maxWaitMs / 1000)}s. `
-        + `Use ${fileQuitLabel()} (not just close the window).`,
+        + `${stillRunningHint}.`,
       );
       const proceed = await confirm(
         `Continue anyway and write while ${label} is still open? (not recommended)`,
@@ -303,7 +309,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     }
     if (winner === "enter") {
       log(
-        `${label} still appears to be running. Use ${fileQuitLabel()} (not just close the window), `
+        `${label} still appears to be running. ${stillRunningHint}, `
         + "then press Enter again — or wait for auto-detect.",
       );
     }

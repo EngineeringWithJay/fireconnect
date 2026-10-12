@@ -464,6 +464,24 @@ add_bin_dir_to_path() {
   fi
 }
 
+# Map a per-shell Node path to one that outlives the shell. fnm puts
+# ~/.local/state/fnm_multishells/<id>/bin first on PATH; fnm deletes that
+# directory later, so a launcher baked with it stops finding Node. Prefer
+# fnm's `default` alias, which tracks `fnm default`. Other paths pass through.
+stable_node_bin() {
+  local node_bin="$1"
+  case "${node_bin}" in
+    */fnm_multishells/*)
+      local alias_node="${FNM_DIR:-${HOME}/.local/share/fnm}/aliases/default/bin/node"
+      if [[ -x "${alias_node}" ]]; then
+        printf '%s\n' "${alias_node}"
+        return
+      fi
+      ;;
+  esac
+  printf '%s\n' "${node_bin}"
+}
+
 install_cli_launcher() {
   local bin_dir="${HOME}/.local/bin"
   local launcher_path="${bin_dir}/fireconnect"
@@ -475,7 +493,7 @@ install_cli_launcher() {
   # `fireconnect key export`) working in non-interactive shells where `node`
   # is not on PATH — common in sandboxes, containers, and CI.
   local node_bin
-  node_bin="$(command -v node 2>/dev/null || true)"
+  node_bin="$(stable_node_bin "$(command -v node 2>/dev/null || true)")"
 
   cat > "${launcher_path}" <<EOF
 #!/usr/bin/env bash

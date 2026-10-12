@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -24,6 +25,7 @@ describe("harness option validation", () => {
   it("rejects Azure and provider flags that the selected harness cannot apply", async () => {
     await withTempHome("option-azure-", async (home) => {
       await rejects(home, ["claude", "on", "--azure"], /Claude does not support Azure mode/);
+      await rejects(home, ["codex", "on", "--azure"], /Codex no longer supports Azure\/Foundry/);
       await rejects(home, ["pi", "on", "--provider", "azure"], /--provider is configure-only/);
       await rejects(
         home,
@@ -83,7 +85,7 @@ describe("harness option validation", () => {
     });
   });
 
-  it("accepts --openai-api-key on codex firerouter on", async () => {
+  it("refuses --openai-api-key on codex and points to Codex's own sign-in", async () => {
     await withTempHome("option-codex-openai-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });
       const result = await runCli(
@@ -105,22 +107,25 @@ describe("harness option validation", () => {
           },
         },
       );
-      assert.equal(result.code, 0, result.stderr);
-      const config = await readFile(codexConfigPath(home), "utf8");
-      assert.match(config, /"x-openai-api-key" = "OPENAI_API_KEY"/);
-      const globalConfig = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
-      assert.equal(globalConfig.openaiApiKey, "sk-proj-codex-flag-12345");
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /Codex pays for GPT turns with its own sign-in/);
+      assert.match(result.stderr, /codex login --with-api-key/);
+      assert.equal(existsSync(codexConfigPath(home)), false);
+      const globalConfig = existsSync(globalConfigPath(home))
+        ? JSON.parse(await readFile(globalConfigPath(home), "utf8"))
+        : {};
+      assert.equal(globalConfig.openaiApiKey, undefined);
     });
   });
 
-  it("accepts --anthropic-api-key on codex firerouter on", async () => {
+  it("refuses --anthropic-api-key on codex and points to an Anthropic Provider Key", async () => {
     await withTempHome("option-codex-anthropic-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });
       const result = await runCli(
         [
           "codex", "on",
           "--api-key", "fw_test_key_12345",
-          "--model", "firerouter",
+          "--model", "firerouter/opus",
           "--anthropic-api-key", "sk-ant-codex-flag-12345",
         ],
         {
@@ -135,11 +140,15 @@ describe("harness option validation", () => {
           },
         },
       );
-      assert.equal(result.code, 0, result.stderr);
-      const config = await readFile(codexConfigPath(home), "utf8");
-      assert.match(config, /env_http_headers = \{ "x-anthropic-api-key" = "ANTHROPIC_API_KEY" \}/);
-      const globalConfig = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
-      assert.equal(globalConfig.anthropicApiKey, "sk-ant-codex-flag-12345");
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /Codex doesn't send an Anthropic key/);
+      assert.match(result.stderr, /Provider Key/);
+      assert.match(result.stderr, /fireconnect configure --anthropic-api-key/);
+      assert.equal(existsSync(codexConfigPath(home)), false);
+      const globalConfig = existsSync(globalConfigPath(home))
+        ? JSON.parse(await readFile(globalConfigPath(home), "utf8"))
+        : {};
+      assert.equal(globalConfig.anthropicApiKey, undefined);
     });
   });
 

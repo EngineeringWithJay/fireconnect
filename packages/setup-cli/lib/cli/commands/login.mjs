@@ -7,6 +7,7 @@ import {
 } from "../../keys/api-key.mjs";
 import { readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
 import { deleteSecret, hasSecret } from "../../keys/secret-store.mjs";
+import { syncBakedKeysAfterStore } from "../../keys/sync.mjs";
 import { identityLabel, verifyFireworksApiKey } from "../../keys/verify-api-key.mjs";
 import {
   clearMintedKeyState,
@@ -139,6 +140,12 @@ export async function runLoginCommand(ctx) {
           ? `${check()} Already signed in${who ? ` as ${who}` : ""}${suffix}.`
           : `${check()} Already signed in${suffix} (couldn't verify with the Fireworks API right now).`,
       );
+      // Harness configs bake the key as a literal and go stale on rotation.
+      if (result.ok) {
+        for (const note of await syncBakedKeysAfterStore(home, existing)) {
+          console.log(`  ${note}`);
+        }
+      }
       // An environment credential is intentionally ephemeral: use it as-is,
       // never offer to mint/paste/store a second key behind it.
       if (fromEnv) {
@@ -176,7 +183,6 @@ export async function runLoginCommand(ctx) {
  */
 export async function runLogoutCommand(ctx) {
   const home = requireHome(ctx);
-
   const config = await readGlobalConfig(home);
   const hadSecret = await hasSecret(home);
   const envNote = process.env.FIREWORKS_API_KEY?.trim()

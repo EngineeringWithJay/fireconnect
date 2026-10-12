@@ -1,7 +1,7 @@
 import { accent, bold, dim, muted, ok } from "../ui.mjs";
 import { AZURE_PROVIDER_LABEL } from "../fireworks/azure-core.mjs";
 import {
-  FIREROUTER_TAGLINE,
+  firerouterTagline,
   routingPreferenceLevelLabel,
   routingPreferenceLevelName,
   routingPreferenceOptionsList,
@@ -11,6 +11,7 @@ import { isFirerouterModelPattern, isFirerouterModel } from "../fireworks/model-
 
 export const FIREROUTER_DOCS_URL =
   "https://docs.fireworks.ai/ecosystem/firerouter/overview";
+export const PROVIDER_KEYS_DOCS_URL = "https://docs.fireworks.ai/nexus/provider-keys";
 
 function displayModel(model) {
   if (typeof model !== "string") {
@@ -186,6 +187,7 @@ export async function printHarnessOnSuccess({
  *   routingPreference?: number|string|null,
  *   routingSupported?: boolean,
  *   firepass?: boolean,
+ *   model?: string,
  * }} args
  * @returns {Array<() => void>}
  */
@@ -196,6 +198,7 @@ export function buildFirerouterOnFootnotes({
   routingPreference = null,
   routingSupported = true,
   firepass = false,
+  model = "",
 }) {
   if (!firerouter || (!firerouterIncluded && !firepass)) {
     // Nothing selected, nothing failed — stay quiet.
@@ -206,6 +209,7 @@ export function buildFirerouterOnFootnotes({
     harnessId,
     included: firerouterIncluded,
     firepass,
+    model,
   })];
   if (firerouterIncluded && supportsRoutingPreference(firerouter)) {
     footnotes.push(() => printRoutingPreferenceHint(harnessId, routingPreference, { supported: routingSupported }));
@@ -213,9 +217,9 @@ export function buildFirerouterOnFootnotes({
   return footnotes;
 }
 
-function printFirerouterEnabledNote() {
+function printFirerouterEnabledNote(model) {
   printNote(
-    `FireRouter is on. ${FIREROUTER_TAGLINE} `
+    `FireRouter is on. ${firerouterTagline(model)} `
       + `Learn more: ${FIREROUTER_DOCS_URL}`,
   );
 }
@@ -228,12 +232,13 @@ export function printFirerouterNote({
   harnessId,
   included = false,
   firepass = false,
+  model = "",
 }) {
   // Only confirm what the user actually selected or what actually failed —
   // never advertise FireRouter on a plain `on`. That keeps the success block
   // short and matches the reader's intent.
   if (included) {
-    printFirerouterEnabledNote();
+    printFirerouterEnabledNote(model);
     return;
   }
   if (firepass) {
@@ -279,7 +284,12 @@ export function printClaudeModelActivationHint() {
   printSessionRestartHint("Claude Code");
 }
 
-export function printCodexRestartHint({ resume = true, providerId = "fireworks-ai", providerLabel = "Fireworks" } = {}) {
+export function printCodexRestartHint({
+  resume = true,
+  providerId = "fireworks-ai",
+  providerLabel = "Fireworks",
+  sessionsOpen = false,
+} = {}) {
   // The app caches the model catalog at boot (see codex/ide-running.mjs); reopen
   // it to pick up the new provider/models. `on`/`off` block while it runs, so
   // this is the matching "reopen it now" nudge. Applies to both on and off.
@@ -290,10 +300,19 @@ export function printCodexRestartHint({ resume = true, providerId = "fireworks-a
   // definition. The provider table only exists while FireConnect routes that
   // provider, so resuming without forcing the provider falls back to OpenAI
   // (or 400s if the session used a ChatGPT account). The resume command only
-  // applies after an `on` for that provider; after `off` the table is gone, so
-  // that path prints a plain restart hint instead.
+  // applies after an `on` for that provider. After `off` the table is gone and
+  // the ChatGPT app refuses to open those threads, so tell users to re-run `on`.
   if (!resume) {
-    printSessionRestartHint("Codex");
+    // `off` waited for every Codex session to close and stopped the shared
+    // daemon (codex/ide-running.mjs), so the next `codex` already reads it,
+    // unless --force left sessions open. The daemon outlives them, so only a
+    // rerun with none open stops it.
+    printRestartHint(sessionsOpen
+      ? "Close every Codex session, then run `fireconnect codex off` again to finish."
+      : "Start Codex again to use the new setup.");
+    printRestartHint(
+      `ChatGPT app threads started on ${providerLabel} won't open until you run \`fireconnect codex on\` again.`,
+    );
     return;
   }
   printRestartHint(

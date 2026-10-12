@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { describe, it } from "node:test";
 
-import { finalizeInstallOrUpgrade, refreshServerlessCatalog } from "../../lib/system/finalize-install.mjs";
+import { finalizeInstallOrUpgrade, refreshModelSources } from "../../lib/system/finalize-install.mjs";
 import {
   readCatalogCache,
   setServerlessCatalogSnapshot,
@@ -37,16 +37,22 @@ describe("finalizeInstallOrUpgrade", () => {
           calls.push(["reconcile", h]);
           return ["Rebaked Claude Code API key — restart Claude Code to pick it up."];
         },
+        codexSignIn: async (h) => {
+          calls.push(["codexSignIn", h]);
+          return ["Switched Codex to its own sign-in."];
+        },
       });
 
       assert.equal(result.migrated, true);
       assert.deepEqual(result.notes, [
         "Enabled MCP tool search for Claude Code (ENABLE_TOOL_SEARCH) — restart Claude Code to pick it up.",
         "Rebaked Claude Code API key — restart Claude Code to pick it up.",
+        "Switched Codex to its own sign-in.",
       ]);
+      // Codex's re-on runs after the rebake, so it reuses a literal key.
       assert.deepEqual(
         calls.filter(([name]) => name !== "log").map(([name]) => name),
-        ["reprobe", "migrate", "reconcile"],
+        ["reprobe", "migrate", "reconcile", "codexSignIn"],
       );
       assert.ok(calls.some(([name, msg]) => name === "log" && /Moved Fireworks API key/.test(String(msg))));
       assert.ok(calls.some(([name, msg]) => name === "log" && /ENABLE_TOOL_SEARCH/.test(String(msg))));
@@ -106,7 +112,7 @@ describe("finalizeInstallOrUpgrade", () => {
   });
 });
 
-describe("refreshServerlessCatalog", () => {
+describe("refreshModelSources", () => {
   it("refreshes the cache when a key resolves and the fetch succeeds", async () => {
     const home = mkdtempSync(path.join(os.tmpdir(), "fc-refresh-"));
     const prevHome = process.env.HOME;
@@ -119,7 +125,7 @@ describe("refreshServerlessCatalog", () => {
       json: async () => ({ object: "list", data: [mockServerlessModel()] }),
     });
     try {
-      assert.equal(await refreshServerlessCatalog(home), true);
+      assert.equal((await refreshModelSources(home)).serverless, true);
       assert.ok(
         readCatalogCache()?.snapshot.entries.some((entry) => entry.shortId === "glm-5p2"),
         "fetched rows are persisted",
@@ -141,7 +147,7 @@ describe("refreshServerlessCatalog", () => {
     process.env.HOME = home;
     delete process.env.FIREWORKS_API_KEY;
     try {
-      assert.equal(await refreshServerlessCatalog(home), false);
+      assert.equal((await refreshModelSources(home)).serverless, false);
       assert.equal(readCatalogCache(), null);
     } finally {
       if (prevKey === undefined) delete process.env.FIREWORKS_API_KEY;
@@ -162,7 +168,7 @@ describe("refreshServerlessCatalog", () => {
       throw new Error("network unreachable");
     };
     try {
-      assert.equal(await refreshServerlessCatalog(home), false);
+      assert.equal((await refreshModelSources(home)).serverless, false);
       assert.equal(readCatalogCache(), null);
     } finally {
       globalThis.fetch = previousFetch;

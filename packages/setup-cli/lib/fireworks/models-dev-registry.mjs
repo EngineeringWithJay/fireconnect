@@ -1,3 +1,5 @@
+import { fetchModelsDevApi } from "../pricing/models-dev.mjs";
+
 /**
  * Lazy cache of Fireworks model ids listed on models.dev for the fireworks-ai
  * provider. OpenCode resolves standard catalog entries through models.dev; when
@@ -76,15 +78,7 @@ export async function refreshModelsDevFireworksRegistry() {
   if (process.env.FIRECONNECT_TEST === "1") {
     return Boolean(fireworksModelIds?.size);
   }
-  try {
-    const response = await fetch("https://models.dev/api.json");
-    if (!response.ok) {
-      return false;
-    }
-    return replaceModelsDevFireworksRegistry(
-      parseModelsDevFireworksModelIds(await response.text()),
-    );
-  } catch {
-    return false;
-  }
+  return replaceModelsDevFireworksRegistry(
+    parseModelsDevFireworksModelIds(await fetchModelsDevApi()),
+  );
 }
