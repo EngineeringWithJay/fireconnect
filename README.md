@@ -930,8 +930,9 @@ copying it into secret storage, and combining `login` with a key-saving option (
 
 ### Export a key
 
-`fireconnect key export` writes the resolved Fireworks API key to stdout without
-a trailing newline. Use `fireconnect key export --openai` for an OpenAI key or
+`fireconnect key export` resolves the Fireworks API key by default. When stdout
+is piped or redirected, it writes the key without a trailing newline. Use
+`fireconnect key export --openai` for an OpenAI key or
 `fireconnect key export --anthropic` for an Anthropic key.
 
 For these commands, a nonblank value in the corresponding environment variable
@@ -943,6 +944,10 @@ login. Exporting a key does not verify its validity with the provider.
 only to a trusted consumer; never include it in logs, issue reports, or agent
 transcripts. The [Codex sign-in example](#signing-in-with-chatgpt) shows piping an
 OpenAI key directly to a key-consuming command.
+
+In a fully interactive terminal, an update prompt can follow the export; accepting
+an upgrade can append upgrade output. Use piped or redirected stdout when another
+program needs only the credential bytes.
 
 ## Troubleshooting
 
